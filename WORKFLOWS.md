@@ -435,4 +435,4 @@ flowchart LR
 | 6.8 Retention maintenance | Expired `login_attempts`, `claim_attempts` (each owning module's cleanup method); old technical log files | No business transaction; invoked manually from CLI |
 | 7 Fraud | `fraud_events` (FraudService) | No (outside business transaction) |
 
-Nothing in this document has been implemented or tested. All selected business defaults are identified by [Assumption A-xx] and recorded in ASSUMPTIONS.md.
+This document remains the approved workflow specification. Stage 5 implements the customer-facing workflows in sections 1.1–1.3, 3 (manual-first code claiming), 4 (points history) and 5.1 (customer redemption). Those database-backed paths still require local MySQL/MariaDB integration and browser tests. The administrator workflows in sections 2, 5.2, 6 and 7 remain later-stage work. All selected business defaults are identified by [Assumption A-xx] and recorded in ASSUMPTIONS.md.

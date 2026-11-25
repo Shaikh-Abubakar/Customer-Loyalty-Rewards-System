@@ -191,6 +191,15 @@ The assignment explicitly permits assumptions for missing requirements. The foll
 
 ---
 
+
+### 5.1 Stage 5 implementation conventions (technical details, not new client requirements)
+
+| ID | Implementation convention | Rationale / boundary |
+|---|---|---|
+| IC-01 | The HMAC registry check value is `HMAC-SHA-256("loyalty-key-check-v1", secret)` using raw 32-byte output. | DATABASE_DESIGN specifies a fixed public check text but does not name it. Stage 5 selects and documents this stable text so the CLI registrar and verifier agree. It is public and is not the HMAC key. |
+| IC-02 | Registration uses bcrypt cost 12 and enforces a maximum password length of 72 bytes in addition to the adopted A-03 minimum of 12 characters. | A fixed cost keeps the dummy unknown-account login hash aligned across PHP 8 runtimes; the byte cap prevents bcrypt truncation. This is an implementation safeguard, not a client-specified complexity rule. |
+
+
 ## 6. Open verification items
 
 Business and workflow gaps that can reasonably be filled for this coursework have been decided in section 5. The following items still need external information or a real environment; they do not invalidate the design itself.
@@ -257,4 +266,4 @@ The project owner authorized the reviewer to select practical assumptions. Recor
 |---|---|---|---|
 | A-01–A-34 | Adopted for coursework design under the project owner's instruction to make reasonable assumptions | 2026-11-25 | These are working design defaults, not independently client-confirmed facts; see each rationale and limitation in section 5. |
 
-The coursework design assumptions A-01 to A-34 were selected under the project owner's instruction to make reasonable assumptions. They are adopted design defaults, not client-verified facts. Stage 2 document consistency is complete. The remaining open items Q-01, Q-02, Q-04, Q-17 and Q-19 are environment, domain or repository checks; they do not leave a functional assignment requirement without a designed solution. Assignment AR-02 is covered by A-24/A-25 with the stated proof limitation. The test result log remains empty because no tests have been run.
+The coursework design assumptions A-01 to A-34 were selected under the project owner's instruction to make reasonable assumptions. They are adopted design defaults, not client-verified facts. Stage 2 document consistency is complete. The remaining open items Q-01, Q-02, Q-04, Q-17 and Q-19 are environment, domain or repository checks; they do not leave a functional assignment requirement without a designed solution. Assignment AR-02 is covered by A-24/A-25 with the stated proof limitation. Stage 5 ran the PHP foundation suite and database-independent code/HMAC/password tests in the build container; the live DB test was blocked because `pdo_mysql` was unavailable. These are implementation-environment checks, not student XAMPP/Ubuntu integration results. See `TEST_PLAN.md` section 7 and `tests/foundation_checks.md`.

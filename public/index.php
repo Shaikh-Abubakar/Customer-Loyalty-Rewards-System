@@ -2,54 +2,47 @@
 declare(strict_types=1);
 
 $app = require dirname(__DIR__) . '/bootstrap/app.php';
+if ($app['pdo'] instanceof PDO) {
+    App\Middleware\AuthMiddleware::redirectIfAuthenticated($app['pdo']);
+}
 $pageTitle = 'Welcome';
 require dirname(__DIR__) . '/templates/layout/header.php';
 ?>
 <main id="main-content" class="container page-shell">
     <section class="hero-panel" aria-labelledby="page-heading">
-        <p class="eyebrow">Customer Loyalty Rewards System</p>
-        <h1 id="page-heading">A simple foundation for a better rewards experience.</h1>
+        <p class="eyebrow">Customer Loyalty Rewards</p>
+        <h1 id="page-heading">Every box can bring you closer to a reward.</h1>
         <p class="hero-copy">
-            The application foundation is in place. Customer journeys, product-code claims,
-            points and reward management will be added in their approved later stages.
+            Join the programme, reveal the unique code inside your product box, and turn valid product codes into loyalty points.
+            Use your points to request rewards from the available catalogue.
         </p>
         <div class="hero-actions">
-            <span class="button button--primary button--disabled" aria-disabled="true">Customer features coming in a later stage</span>
+            <a class="button button--primary" href="<?= e(url('/register.php')) ?>">Join the programme</a>
+            <a class="button button--secondary" href="<?= e(url('/login.php')) ?>">Sign in</a>
         </div>
     </section>
 
-    <section class="status-grid" aria-label="Foundation status">
-        <article class="status-card">
-            <div class="status-card__top">
-                <h2>Application</h2>
-                <span class="status-pill status-pill--ready">Loaded</span>
-            </div>
-            <p>Configuration, secure session setup and shared helpers are loaded.</p>
+    <section class="steps-grid" aria-label="How the rewards programme works">
+        <article class="panel step-card">
+            <span class="step-number" aria-hidden="true">1</span>
+            <h2>Create your account</h2>
+            <p>Register with your name and email address. A phone number is optional.</p>
         </article>
-        <article class="status-card">
-            <div class="status-card__top">
-                <h2>Database</h2>
-                <?php if ($app['database_connected']): ?>
-                    <span class="status-pill status-pill--ready">Connected</span>
-                <?php else: ?>
-                    <span class="status-pill status-pill--pending">Not connected</span>
-                <?php endif; ?>
-            </div>
-            <?php if ($app['database_connected']): ?>
-                <p>The PDO connection is available and configured for UTF-8 and UTC.</p>
-            <?php else: ?>
-                <p>Set up your local <code>.env</code> file, create the database and import <code>database/schema.sql</code>. Then run the database test.</p>
-            <?php endif; ?>
+        <article class="panel step-card">
+            <span class="step-number" aria-hidden="true">2</span>
+            <h2>Reveal and claim</h2>
+            <p>Find the 16-character code inside your sealed box and enter it after signing in.</p>
+        </article>
+        <article class="panel step-card">
+            <span class="step-number" aria-hidden="true">3</span>
+            <h2>Earn and redeem</h2>
+            <p>Valid claims add points to your account. Browse the reward catalogue and submit a request.</p>
         </article>
     </section>
 
-    <section class="next-panel" aria-labelledby="next-heading">
-        <h2 id="next-heading">Next setup steps</h2>
-        <ol>
-            <li>Copy <code>.env.example</code> to <code>.env</code> and enter local database settings.</li>
-            <li>Create the database and import the approved 17-table schema.</li>
-            <li>Run <code>php bin/test_database.php</code> to verify the PDO connection.</li>
-        </ol>
+    <section class="note-panel" aria-labelledby="purchase-proof-heading">
+        <h2 id="purchase-proof-heading">How a product is verified</h2>
+        <p>Each eligible box contains a unique concealed code. Possession of a valid code is the programme's proof-of-purchase credential; it does not independently verify a retailer payment or receipt.</p>
     </section>
 </main>
 <?php require dirname(__DIR__) . '/templates/layout/footer.php'; ?>

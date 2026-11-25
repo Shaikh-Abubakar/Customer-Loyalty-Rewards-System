@@ -1,46 +1,62 @@
 # Customer Loyalty Rewards System
 
-A PHP 8 and MySQL/MariaDB college project for a factory loyalty programme. Customers will claim one-time concealed product-box codes to earn points and redeem rewards; the factory administrator will manage products, batches, customers, rewards and monitoring.
+A PHP 8 and MySQL/MariaDB college project for a factory loyalty programme. Customers register, sign in, claim one-time concealed product-box codes, earn points, browse rewards and submit redemption requests. The points ledger is the source of truth for every balance.
 
-**Current implementation:** Stage 4 foundation only. Customer registration/login, code claims, points transactions, rewards, redemptions and administrator modules are intentionally not implemented yet.
+**Implemented through Stage 5:** customer registration, login/logout, authenticated dashboard, manual product-code claiming, points history, rewards catalogue, one-unit redemption requests and customer redemption tracking. The administrator product/batch/code-generation, fulfilment, monitoring and reporting modules remain later-stage work.
 
 ## Technology
 
-- PHP 8 with PDO
-- MySQL or MariaDB using InnoDB and `utf8mb4`
-- HTML5 inside PHP templates; CSS3 in separate files
-- Windows XAMPP as the primary development environment; Ubuntu Apache/PHP/MySQL compatibility is a design target
-- No front-end framework, Node.js or separate JavaScript files
+- PHP 8.0+ with PDO
+- MySQL or compatible MariaDB using InnoDB and `utf8mb4`
+- HTML5 in PHP files; CSS3 in separate CSS files
+- Small inline JavaScript only for optional QR-fragment prefill
+- XAMPP on Windows and Ubuntu Apache/PHP/MySQL compatibility
+- No React, Vue, Angular, Node.js, Composer runtime dependency or separate JavaScript files
 
-## Project layout
+## Project layout and web root
 
-Apache must serve **only** `public/`. Keep `.env`, bootstrap, config, application classes, templates, logs, SQL and tests outside the document root. The Stage 2 and Stage 3 design documents remain at the project root.
+Apache must serve **only `public/`**. Keep `.env`, bootstrap, config, application classes, templates, logs, SQL, tests and project documents outside the document root. `public/` contains the customer entry points and the CSS assets.
 
 ## Requirements
 
 - PHP 8.0 or later
-- PHP extensions: `PDO`, `pdo_mysql`, `session`, `openssl` (plus standard JSON support)
-- MySQL 8 or a compatible MariaDB release with InnoDB and `utf8mb4_unicode_ci`
+- PHP extensions: `PDO`, `pdo_mysql`, `session`, `openssl`
+- MySQL 8 or compatible MariaDB with InnoDB, `utf8mb4_unicode_ci`, transactions and row locking
 - Apache configured with the project's `public/` directory as its document root
 
-Confirm versions in both PHP CLI and the Apache PHP runtime; they may differ.
+Check PHP CLI and Apache separately; they can load different `php.ini` files and extensions.
 
 ## 1. Configure the application
 
 1. Copy `.env.example` to `.env` in the project root.
-2. Edit `.env` with local values for `APP_BASE_URL`, `APP_TIMEZONE`, `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER` and `DB_PASSWORD`.
-3. Keep `.env` outside `public/` and never commit it. `.gitignore` already excludes it.
-4. Check the PHP configuration used by both CLI and Apache. Run `php --ini` in a terminal; in XAMPP, open the matching `php.ini` and ensure the `pdo_mysql` extension is enabled (for example, the `extension=pdo_mysql` line is not commented out). Restart Apache after changing its PHP configuration.
-5. For a local HTTP-only XAMPP demonstration, `SESSION_COOKIE_SECURE=0` is allowed only while using localhost. HTTPS is required for network-accessible deployments; Secure cookies are enabled automatically when PHP sees HTTPS. Do not trust forwarded proxy headers unless a trusted proxy is explicitly configured.
-6. `HMAC_ACTIVE_KEY_ID` and `HMAC_KEY_<id>` are placeholders for later code-generation stages. Replace them locally with generated secrets before implementing code generation. Never use the placeholder value or commit a real key.
+2. Set `APP_BASE_URL`, `APP_TIMEZONE`, `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER` and `DB_PASSWORD` to your local values.
+3. Keep `.env` outside `public/` and never commit it. `.gitignore` excludes it.
+4. In both the CLI and Apache PHP configurations, enable `pdo_mysql`. In XAMPP, check the `php.ini` used by the XAMPP PHP runtime, then restart Apache.
+5. For localhost-only HTTP testing, `SESSION_COOKIE_SECURE=0` is acceptable. Use HTTPS and Secure cookies for any network-accessible deployment.
 
-The `.env` reader supports simple `KEY=value` lines, single/double-quoted values and comments. Process environment variables take precedence over `.env` values.
+### Configure the HMAC key before claiming codes
 
-## 2. Create the database
+The code-claim workflow requires an active key in `.env` and a matching registry row in `hmac_key_registry`. Generate a fresh 32-byte random key locally:
 
-The schema file contains table definitions only. It deliberately does **not** contain `CREATE DATABASE` or `USE` as its first statements; create/select the target database separately before importing it.
+```bash
+php -r "echo base64_encode(random_bytes(32)), PHP_EOL;"
+```
 
-In phpMyAdmin or a MySQL/MariaDB administrator console, create an empty database using the approved character set/collation:
+Copy its output into `.env` as `HMAC_KEY_1`, keeping `HMAC_ACTIVE_KEY_ID=1`. Do not paste the real key into this README, SQL, screenshots, source code or Git.
+
+After importing the schema and configuring the database connection, run this one-time setup command from the project root:
+
+```bash
+php bin/register_hmac_key.php
+```
+
+It registers the configured active key ID and a 32-byte check value; it does not store or print the secret. It refuses to run when an active key already exists or the key ID is already registered. It is an initial provisioning helper, **not** a key rotation tool. Keep any retired key values in protected environment configuration while their codes remain in the database.
+
+The application uses `HMAC-SHA-256` over `loyalty-code-v1:` plus the normalized code. The registry key-check uses the public fixed text `loyalty-key-check-v1`. This is an implementation convention for the otherwise unspecified fixed key-check text in `DATABASE_DESIGN.md`; it is not a secret.
+
+## 2. Create and import the database
+
+The schema file contains table definitions only. Create/select the target database separately:
 
 ```sql
 CREATE DATABASE customer_loyalty
@@ -48,13 +64,13 @@ CREATE DATABASE customer_loyalty
     COLLATE utf8mb4_unicode_ci;
 ```
 
-Select `customer_loyalty` and import `database/schema.sql`. The schema creates exactly the 17 tables described in `DATABASE_DESIGN.md`; it inserts no demonstration data.
+Select `customer_loyalty` in phpMyAdmin and import `database/schema.sql`. It creates the approved 17 tables and does not insert demo records.
 
-Use an application database account, not `root`. Grant only the table permissions needed by the owning services. In particular, `points_ledger` and `audit_logs` must receive **SELECT and INSERT only** for the application account; never grant UPDATE or DELETE on those two tables. Grant only the specific operations needed on other tables, with DELETE reserved for the later retention operation on attempt tables if implemented.
+Use a dedicated application database user, not `root`. Follow the least-privilege rules in `DATABASE_DESIGN.md`; `points_ledger` and `audit_logs` must be SELECT/INSERT only for the application account (never UPDATE or DELETE). Do not grant broader privileges merely to make a test pass.
 
 ## 3. Run on Windows XAMPP
 
-Preferred setup is an Apache virtual host whose `DocumentRoot` points to the project's `public` directory. Example (replace the path with the actual project path):
+A virtual host is preferred. Example (adjust the path):
 
 ```apache
 <VirtualHost *:80>
@@ -68,40 +84,76 @@ Preferred setup is an Apache virtual host whose `DocumentRoot` points to the pro
 </VirtualHost>
 ```
 
-Add `127.0.0.1 loyalty.local` to the Windows hosts file, enable the virtual-host include in Apache, restart Apache, and set `APP_BASE_URL=http://loyalty.local` in `.env`. Start both Apache and MySQL from the XAMPP Control Panel. Open `http://loyalty.local/`.
+Add `127.0.0.1 loyalty.local` to the Windows hosts file, enable the virtual-host include, restart Apache, start MySQL from XAMPP, and set `APP_BASE_URL=http://loyalty.local` in `.env`. Open `http://loyalty.local/`.
 
-Do not point `DocumentRoot` at the project root or put `.env` under `htdocs` as a public file.
+Do not point Apache's document root at the project root or put `.env` inside `htdocs` as a public file. Run the CLI commands from the project root using the same PHP installation that has `pdo_mysql` enabled.
 
 ## 4. Run on Ubuntu Apache
 
-Configure an Apache site with `DocumentRoot /path/to/Customer reward system/public` and a matching `<Directory>` block. Install PHP 8 and the PDO MySQL driver for both CLI and Apache/FPM contexts. Give Apache read access to source files and write access only to `storage/logs/`; keep `.env` owner-readable and outside the document root. Enable HTTPS before using real accounts or codes.
+Configure the Apache site with `DocumentRoot /path/to/Customer reward system/public` and an appropriate `<Directory>` block. Install PHP 8 and the PDO MySQL extension for both CLI and Apache/PHP-FPM. Give Apache read access to source files and write access only to `storage/logs/`; keep `.env` owner-readable and outside the document root. Enable HTTPS before using real accounts or product codes.
 
-No operating-system-specific absolute path is embedded in application code. The Ubuntu deployment is a compatibility target; it has not been tested by this Stage 4 build.
+The code avoids Windows-specific absolute paths. The provided build container did not have `pdo_mysql` or a MySQL/MariaDB server, so the database-backed workflows have **not** been end-to-end verified on Ubuntu or XAMPP.
 
-## 5. Verify the foundation
+## 5. Stage 5 customer workflows
 
-Run from the project root:
+### Registration and authentication
+
+- Registration asks for full name, email, optional phone, password and confirmation. Email is normalized to lowercase; the account and profile are inserted in one transaction.
+- Passwords are hashed with PHP `password_hash()` using bcrypt cost 12 and checked with `password_verify()`. The selected policy is at least 12 characters; the implementation also caps input at 72 bytes to avoid bcrypt truncation.
+- Duplicate-email feedback is generic. Registration creates a customer role only; there is no public admin selector or email-verification workflow.
+- Login uses generic invalid-credential/account-state messages, an IP/account failure window, a dummy password hash for unknown emails, session-ID regeneration and a DB status check on each protected request.
+- Logout is POST-only and CSRF-protected. Only the fixed `return=claim` destination is accepted as a post-login return target.
+
+### Product-code claims
+
+- Manual entry is the primary workflow. Input is uppercased and spaces/hyphens are removed; the result must be 16 characters from `23456789ABCDEFGHJKMNPQRSTVWXYZ`.
+- A keyed HMAC-SHA-256 digest is compared with stored `codes.code_hash` values. The raw product code is not stored, logged or echoed back. Active and retired keys are checked; each needs a matching protected configuration value and registry check.
+- A successful claim conditionally changes one code from `unclaimed` to `claimed`, adds one positive append-only ledger entry and records the successful attempt in one transaction. Unique constraints and conditional updates prevent code reuse and duplicate credits.
+- Claims are available only from active batches. Invalid/used/voided/inactive-batch cases use non-revealing customer messages; a same-customer repeat gets the documented repeat message.
+- The optional QR fragment only prefills the manual field; it never submits the form. A logged-out visitor signs in and must rescan or type the code; the plaintext is not carried through login.
+- The fraud thresholds and review events follow `WORKFLOWS.md` and the adopted A-04 thresholds.
+
+### Dashboard, history and rewards
+
+- The dashboard reads live ledger totals, successful claim count, available reward catalogue entries, recent ledger activity and recent redemption requests.
+- Points balance is always calculated by summing `points_ledger.points_delta`; no cached balance column is introduced.
+- The reward catalogue shows active rewards, cost, stock and insufficient-points/out-of-stock states.
+- A redemption confirmation displays cost, current balance and projected balance. Confirmation is a CSRF-protected POST with a one-time idempotency token.
+- The transaction locks the customer and reward, reserves one stock unit, creates a pending redemption and appends the negative ledger debit atomically. Repeated submission with the same token returns the existing request. Customers cannot cancel their own requests.
+
+## 6. Demo-data and remaining modules
+
+The schema imports empty tables. The Stage 5 customer pages display genuine database values and meaningful empty states; they do not fabricate demo customers, product codes, points or rewards.
+
+The Stage 5 scope does not yet include administrator screens or a code-generation/export tool. Therefore, a full claim demo requires a code/batch created by the later approved admin-generation stage (or controlled synthetic fixture records that obey the HMAC and foreign-key rules). Rewards can be added by the later admin module or a controlled demo seed. Use synthetic records described in `DEMO_DATA_GUIDE.md`; never commit actual product codes, HMAC keys or export CSVs.
+
+**Purchase-proof limitation:** possession of a valid concealed one-time code is the selected operational purchase credential. The system does not independently verify a retailer receipt or point-of-sale transaction (A-24/A-25).
+
+## 7. Tests and verification
+
+Run these commands from the project root:
 
 ```bash
 php -v
 php -m
 php bin/test_foundation.php
+php bin/test_stage5.php
 php bin/test_database.php
 ```
 
-- `test_foundation.php` checks the shared configuration, session and helper foundation.
-- `test_database.php` makes a real PDO MySQL connection attempt and reports the database server version only on success.
-
-A successful syntax/smoke test does not mean the database is connected. Record the PHP, MySQL/MariaDB and Apache versions and actual results in `tests/foundation_checks.md` and `TEST_PLAN.md` after testing your own XAMPP/Ubuntu environment.
+- `test_foundation.php`: 20 shared configuration/session/helper checks.
+- `test_stage5.php`: 26 database-independent checks for code normalization/alphabet, HMAC key and digest handling, password hashing, UTF-8 character counting and a source-level SQL-string regression guard.
+- `test_database.php`: real PDO MySQL connection test; it needs `pdo_mysql` and a running database.
+- Run the full browser, SQL, concurrency, rate-limit and CSRF test plan in `TEST_PLAN.md` on your own XAMPP or Ubuntu installation. Do not mark tests as passed until they are run there. Record actual versions and results.
 
 ## Security notes
 
-- Passwords, DB credentials and HMAC keys do not belong in source code, SQL, logs or Git.
-- Code values will be stored as HMAC-SHA-256 hashes with key IDs, not plaintext.
-- The points ledger and audit log are append-only; the application database account must not be able to update or delete either table.
-- All dates stored in the database are UTC `DATETIME` values; the PDO connection sets UTC and strict SQL mode.
-- The first administrator is created through the approved CLI workflow in a later stage; there is no public admin registration.
+- `.env`, passwords, database credentials, HMAC secrets, plaintext product codes and export files never belong in Git.
+- Customer pages use server-side authentication, role/status checks, CSRF for state changes, prepared statements, escaped output and private no-store responses.
+- Claim and redemption state changes use transactions; the points ledger is append-only and is the sole source of balance.
+- Database timestamps are stored in UTC; PDO sets UTC and strict SQL mode.
+- The first administrator and all admin workflows are not part of Stage 5; there is no public admin registration.
 
-## Stage boundary and next work
+## Assignment and Git submission
 
-Stage 4 provides configuration, secure sessions, error handling, helpers, database connectivity, the approved initial schema, a placeholder landing page and CSS tokens/components. Implement authentication and first-admin CLI workflow in the next approved stage. Do not treat the database schema or the placeholder page as a completed loyalty application.
+The assignment requires meaningful incremental commits, a 5–10 interaction AI log with at least two genuine AI errors/corrections, test evidence and a public repository. The supplied Stage 4 ZIP does not contain `.git` metadata, so no commit history could be inspected or created here. Apply the Stage 5 files to your own Git working tree, inspect the changes, then commit the stage as a separate milestone. Add your actual earlier prompts and student-run test evidence to `AI_LOG.md`/`TEST_PLAN.md`; do not claim that sandbox checks are XAMPP tests.

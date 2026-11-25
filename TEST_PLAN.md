@@ -381,11 +381,16 @@ No special tools are assumed. [Unresolved: choose tools after Q-01]
 
 ---
 
-## 7. Result log (empty on purpose)
+## 7. Result log (Stage 5 build-container checks recorded; local integration still pending)
 
 | Test ID | Date run | Environment (XAMPP / Ubuntu, PHP and DB versions) | Result | Evidence or notes |
 |---|---|---|---|---|
-| | | | | |
+| Foundation smoke test | 2026-11-25 | Build container, PHP 8.4.24; no database driver | PASS — 20 checks, 0 failures | `php bin/test_foundation.php`; not an XAMPP test. |
+| Stage 5 unit/format checks | 2026-11-25 | Build container, PHP 8.4.24 | PASS — 26 checks, 0 failures | `php bin/test_stage5.php`; covers alphabet/normalisation, HMAC, password APIs, UTF-8 length and a source-level guard against escaped SQL line breaks in single-quoted PHP strings. |
+| PHP syntax checks | 2026-11-25 | Build container, PHP 8.4.24 | PASS | All 54 PHP files passed `php -l`; live database behavior not exercised. |
+| Public landing page and CSS smoke | 2026-11-25 | Build container, PHP 8.4.24 built-in server | PASS | `GET /` returned HTTP 200 and the updated Stage 5 landing-page content; `GET /assets/css/customer.css` returned HTTP 200. No database-backed route was tested. |
+| PDO MySQL connection | 2026-11-25 | Build container, PHP 8.4.24 | BLOCKED | `php bin/test_database.php` reports that `pdo_mysql` is not enabled. |
+| Schema import, registration, login, claim, redemption, concurrency and CSRF browser flows | Not run | Student XAMPP / Ubuntu environment | NOT RUN | Requires a configured MySQL/MariaDB server and browser testing. Student must fill results after execution. |
 
 ---
 
@@ -393,10 +398,10 @@ No special tools are assumed. [Unresolved: choose tools after Q-01]
 
 Before any test is run:
 
-- The Stage 3 build exists. (Nothing has been built.)
+- Stage 4 foundation and Stage 5 customer-facing code exist in the supplied project ZIP. The live database-dependent workflows still require an own-machine integration run.
 - Q-01 and Q-02 environment checks have been completed and recorded here; if they have not, automated-tool and schema choices remain pending. (They are open verification items in ASSUMPTIONS section 6.)
 - The selected assumptions affecting tests (A-04, A-08, A-10, A-12 and the other A-IDs) are used as the documented expected behaviour; revise tests if a later client fact changes a choice.
 - The selected purchase-proof model is covered by FN-21/FN-22 and the code-claim security tests. If the client later requires receipt/POS proof, add a separately designed evidence workflow and tests before implementation.
 - Before final assignment submission, execute the test plan and fill section 7 with actual results and environment details.
 
-This plan has not been executed. It does not claim that any behaviour works.
+Only the listed build-container syntax, foundation and database-independent checks have been executed. The full plan has not been executed; it does not claim that database-backed behavior works until local SQL and browser tests pass.

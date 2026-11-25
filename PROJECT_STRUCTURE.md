@@ -1,6 +1,6 @@
 # PROJECT_STRUCTURE.md: Customer Loyalty Rewards System
 
-Stage 2 design document. **Design only. No folders, application files, schema files or dependencies are created by this document.** The tree below is the *planned* layout for Stage 3.
+Stage 2 design document, updated with a Stage 5 implementation-status note. The original tree remains the planned full application layout; Stage 4 created the foundation and Stage 5 implemented the listed customer-facing files and services. The presence of a planned file in this design does not mean its future admin functionality is implemented.
 
 Companion documents: [ARCHITECTURE.md](ARCHITECTURE.md), [DATABASE_DESIGN.md](DATABASE_DESIGN.md), [WORKFLOWS.md](WORKFLOWS.md), [ASSUMPTIONS.md](ASSUMPTIONS.md), [TEST_PLAN.md](TEST_PLAN.md).
 
@@ -150,12 +150,14 @@ Notes:
 
 | File | Purpose | Main service |
 |---|---|---|
-| `register.php`, `login.php`, `logout.php` | Registration, login, logout | `AuthService` |
-| `dashboard.php`, `profile.php` | Customer home and profile | `ProfileService`, `LedgerService` |
-| `claim.php` | Show claim form; handle POST | `ClaimService` |
-| `history.php` | Points history | `LedgerService` |
-| `rewards.php`, `redeem.php`, `redemptions.php` | Browse, redeem, track | `RewardService`, `RedemptionService` |
-| `admin/*.php` | Admin screens as listed in section 2 | Matching admin-side services |
+| `register.php`, `login.php`, `logout.php` | **Implemented in Stage 5:** customer registration, login and POST/CSRF logout | `AuthService` |
+| `dashboard.php` | **Implemented in Stage 5:** customer home, live ledger summary, recent activity and redemptions | `ProfileService`, `LedgerService`, `RedemptionService`, `RewardService` |
+| `profile.php` | Planned profile-management page; not implemented in Stage 5 | `ProfileService` (future) |
+| `claim.php` | **Implemented in Stage 5:** manual-first code claim, optional QR-fragment prefill | `ClaimService` |
+| `history.php` | **Implemented in Stage 5:** ledger-derived points history | `LedgerService` |
+| `rewards.php`, `redeem.php`, `redemptions.php` | **Implemented in Stage 5:** browse active rewards, confirm one-unit requests and track status | `RewardService`, `RedemptionService` |
+| `admin/index.php` | Minimal protected admin placeholder only; admin management is not implemented | `AuthMiddleware` |
+| Other `admin/*.php` | Planned admin screens; not implemented in Stage 5 | Matching future admin-side services |
 | `admin/batch_generate_export.php` | POST-only generate and download (WORKFLOWS 2.3, 2.4) | `BatchService`, `CodeGeneratorService`, `ExportService` |
 
 ### 4.2 Bootstrap
@@ -181,7 +183,8 @@ Notes:
 | File | Purpose |
 |---|---|
 | `bin/create_admin.php` | Creates the initial factory-owner administrator and, when deliberately invoked by the operator, any additional administrator accounts. There is no web admin-creation screen. Bootstrap creation has a NULL actor; later creations are audited with the invoking operator. [Assumptions A-07/A-16] |
-| `bin/key_check.php` | Reads `.env` keys, compares with `hmac_key_registry` (status and check values), prints a report with **no secrets**. |
+| `bin/register_hmac_key.php` | **Implemented in Stage 5:** one-time initial active-key registry setup; never prints/stores the secret. Does not rotate keys. |
+| `bin/key_check.php` | Planned full key/configuration report; not implemented. |
 | `bin/key_rotate.php` | Operator-only helper for the rotation sequence in WORKFLOWS 6.7; reads secrets from protected configuration and never prints or logs them. |
 | `bin/retention_maintenance.php` | Manually runs the owning services' retention methods: prune expired login/claim attempts and old technical log files; never deletes ledger or audit rows. [WORKFLOWS 6.8, A-11] |
 
@@ -291,6 +294,12 @@ The assignment PDF requires the following items in the final public GitHub repos
 
 The assignment asks for a deployed link **if available**; it does not make a deployed URL mandatory when none exists. The selected purchase-proof assumption (A-24) uses the concealed per-box code; the README must also disclose that no independent POS/receipt verification is performed (A-25). The public GitHub repository is a submission requirement. The user must be able to explain every part of the submission and should retain genuine AI interaction evidence throughout development.
 
-## 11. What this document does not do
+## 11. Stage 5 implementation status
+
+Implemented customer routes: `register.php`, `login.php`, `logout.php`, `dashboard.php`, `claim.php`, `history.php`, `rewards.php`, `redeem.php`, and `redemptions.php`. Implemented supporting services/repositories cover user/profile creation, session authentication, code HMAC verification, claim attempts, fraud signals, ledger totals/history and transactional redemptions. `bin/test_stage5.php` contains database-independent tests; `bin/register_hmac_key.php` provisions the first key registry row.
+
+Not implemented by Stage 5: customer profile editing, first-admin creation, product/batch management, code generation/CSV export, full admin dashboard, fulfilment and cancellation, fraud review, audit/reporting/reconciliation or automated retention. See README and AI_LOG for environment limits.
+
+## 12. What this document does not do
 
 It does not create folders or files, write PHP, produce SQL, install Composer or any package, or begin Stage 3.

@@ -6,9 +6,48 @@ namespace App\Support;
 use PDO;
 use PDOException;
 use RuntimeException;
+use Throwable;
 
 final class Database
 {
+    /** Execute one READ COMMITTED transaction, retrying a deadlock or lock timeout once. */
+    public static function transaction(PDO $pdo, callable $callback): mixed
+    {
+        if ($pdo->inTransaction()) {
+            throw new RuntimeException('Nested transactions are not supported.');
+        }
+
+        for ($attempt = 0; $attempt < 2; $attempt++) {
+            try {
+                $pdo->exec('SET TRANSACTION ISOLATION LEVEL READ COMMITTED');
+                $pdo->beginTransaction();
+                $result = $callback($pdo);
+                $pdo->commit();
+                return $result;
+            } catch (Throwable $exception) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+                if ($attempt === 0 && self::isRetryableTransactionError($exception)) {
+                    usleep(random_int(10000, 40000));
+                    continue;
+                }
+                throw $exception;
+            }
+        }
+
+        throw new RuntimeException('The database transaction could not be completed.');
+    }
+
+    private static function isRetryableTransactionError(Throwable $exception): bool
+    {
+        if (!$exception instanceof PDOException) {
+            return false;
+        }
+        $driverCode = (int) ($exception->errorInfo[1] ?? 0);
+        return $exception->getCode() === '40001' || in_array($driverCode, [1205, 1213], true);
+    }
+
     /** @param array{host:string,port:int,name:string,user:string,password:string} $settings */
     public static function connect(array $settings): PDO
     {
