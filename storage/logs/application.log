@@ -1,0 +1,2 @@
+[2026-11-25T14:40:17Z] ERROR correlation_id=ce62df2e-5e78-4c8c-86cb-79779fedfc90 exception=RuntimeException message=Database configuration is incomplete. location=C:\xampp\htdocs\Customer reward system\src\Support\Database.php:22
+[2026-11-25T14:40:17Z] ERROR correlation_id=ce62df2e-5e78-4c8c-86cb-79779fedfc90 exception=Error message=Undefined constant "STDERR" location=C:\xampp\htdocs\Customer reward system\bin\test_database.php:24
