@@ -1,386 +1,260 @@
-Customer Loyalty Rewards System — Requirements Analysis
-Steps 1–3: gap analysis, decisions and application requirements. Fixed stack: PHP 8+, MySQL 8 (InnoDB), PDO with prepared statements, server-rendered HTML5/CSS3, minimal vanilla JavaScript, PHP sessions. Prepared 23 November 2026.
-Scope note
-Your brief stops mid-sentence at “### 4. Factory”. I have treated it as the Factory Owner / Administration module, and I have also added a Fraud Monitoring module and non-functional requirements, because the brief asks for suspicious-activity monitoring and security elsewhere. If the original brief continued (database schema, architecture, code), paste the rest and I will carry on from this document.
-How to read it: Section 1 records your three fixed design decisions. Section 2 covers Steps 1 and 2: the 26 gaps from your list (G1–G26) plus six more I found (G27–G32), each with two options, a recommendation and its impact. Section 3 is Step 3, the requirements by module. Section 4 lists assumptions and open questions for the factory owner.
-1. Fixed design decisions
-A. Purchase verification limitation
-Documented limitation. A valid code proves that someone has access to the code. It does not prove that the person bought the product or holds it legitimately. The system rewards possession of a code, not a verified sale. State this in the README, in the terms and conditions, and in your viva.
-Residual risks (not eliminated):
-• Theft from warehouses, delivery vehicles or shops: the thief holds genuine, unclaimed codes.
-• Boxes opened inside stores: the code is read or photographed, then the box is resealed or abandoned.
-• Codes photographed and shared in chat groups or on social media: the first claimant wins.
-• Resale of opened boxes: an opened box may be sold with an unclaimed code, or a code may be claimed and the product then resold.
-• Insider exposure: printers, packers and staff handle codes before sale.
-• Online guessing of codes: made impractical by code length and rate limiting (G6, G27).
-Mitigations adopted (they reduce fraud and help detect it; they do not eliminate it):
-1.  Activate batches only after dispatch. Codes taken before dispatch cannot be claimed, and attempts to claim them become a theft signal (G7, G18).
-2.  Per-account and per-device claim limits (G19).
-3.  Monitoring of suspicious claiming patterns with an admin review queue (G18).
-4.  Batch revocation by the owner for stolen, recalled or compromised stock (G9).
-One weakness I am challenging. Per-device limits are only as strong as device identification, and a plain web app cannot identify devices reliably: cookies can be cleared, a family may share one phone, and mobile networks share IP addresses. Device and IP data should therefore be treated as risk signals that flag or throttle, never as proof of identity or grounds for an automatic permanent ban. The per-account limit is the hard control.
-B. Two separate security protections
-Protection 1: single-use (enforced in the database)
-• Prevents: the same code being credited twice; replay of a code after the legitimate claim; double credit caused by two simultaneous requests or a double-clicked button.
-• Cannot prevent: someone who steals or photographs an unused code and claims it first. The real buyer then finds it already used.
-• Mechanism: one atomic conditional update inside a transaction.
-UPDATE codes
-SET status = 'claimed', claimed_by = :customer_id, claimed_at = UTC_TIMESTAMP()
-WHERE code_hash = :hash
-  AND status = 'active'
-  AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP());
-PHP credits points only if rowCount() === 1. InnoDB takes a row lock on the UPDATE, so when two requests race, the second waits, re-evaluates status = 'active', finds it false and updates zero rows. The code update, the claim record and the ledger insert commit together or not at all.
-• Second line of defence: a UNIQUE constraint on code_claims.code_id, and a UNIQUE (reference_type, reference_id) on the ledger, so even a PHP bug cannot create a second credit for the same code.
-Protection 2: physical copy protection (in the packaging)
-• What it is: the code is hidden under a tamper-evident scratch-off panel, or placed inside the lid or an inner flap, so it cannot be read without opening or damaging the pack.
-• Prevents: casual reading or photographing of codes in shops or in transit, before purchase. Visible damage also lets a buyer reject a pack that was already scratched.
-• Cannot prevent: reuse of a code once someone has it (scratch-and-reseal, theft of already opened boxes); exposure to insiders such as the printer before the panel is applied; a determined person defeating the panel.
-• Practical note: ask the packaging vendor for tamper-evident scratch labels and restrict access to print files.
-How they combine. They fail differently. Physical hiding lowers the chance that a code is seen before purchase. Single-use limits the damage after exposure to one successful claim. Neither stops theft of an intact box, which is why dispatch-time activation, revocation and monitoring are still needed.
-C. Append-only points ledger
-Principle. Points exist only as rows in points_ledger. A customer’s balance is SUM(points) over their rows. There is no editable balance column anywhere. If performance ever demands a cache, it must be a derived, rebuildable summary, never the source of truth.
-Suggested shape (final schema comes in a later step): id, customer_id, entry_type (claim, redemption, reversal, adjustment, expiry reserved), points (signed, never zero), reference_type, reference_id, reverses_entry_id (nullable, UNIQUE), reason, created_by, created_at.
-Rules
-• Insert only. No updates, no deletes.
-• A correction is a new row of opposite sign whose reverses_entry_id points at the entry it cancels. The UNIQUE constraint means an entry can be reversed only once.
-• Every ledger write happens in the same InnoDB transaction as the business event it records (claim, redemption, cancellation).
-• Manual adjustments need the owner role, a mandatory reason and an audit-log entry.
-Enforcement (layered; each layer covers a different failure)
-1.  Database privileges. The web application’s MySQL account gets only SELECT, INSERT on points_ledger. Schema changes use a separate migration account that the web app never uses. This defends against SQL injection and application bugs issuing UPDATE or DELETE.
-2.  Triggers. BEFORE UPDATE and BEFORE DELETE triggers reject the change:
-CREATE TRIGGER points_ledger_no_update BEFORE UPDATE ON points_ledger
-FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'points_ledger is append-only';
--- an identical BEFORE DELETE trigger: points_ledger_no_delete
-3.  Constraints. CHECK (points <> 0), foreign keys, and the UNIQUE reversal link.
-4.  Honest limit. A database administrator with sufficient privileges can still drop the triggers or edit data. The application account cannot run TRUNCATE (it needs DROP), but root can. So this is tamper-resistant against the application and attackers, not against a privileged DBA. Backups, the binary log and a periodic reconciliation report cover that gap.
-Concurrency
-• Lock-order rule. Every transaction that writes a customer’s ledger starts with SELECT id FROM customers WHERE id = :id FOR UPDATE as its first statement, then touches other rows in a fixed order (customer, then code or reward, then ledger). Retry once on a deadlock (SQLSTATE 40001).
-• Claims. Protection 1 above, run after the customer lock so per-account limit checks are consistent.
-• Redemptions.
-    1.  BEGIN, then lock the customer row.
-    2.  Read the balance: SELECT COALESCE(SUM(points), 0) FROM points_ledger WHERE customer_id = :id. Because the lock was the first statement, the snapshot is taken after the lock is granted and sees every earlier commit.
-    3.  If balance < cost, roll back with “insufficient points”.
-    4.  Reserve stock: UPDATE rewards SET stock = stock - 1 WHERE id = :r AND is_active = 1 AND stock >= 1. rowCount() must be 1.
-    5.  Insert the redemption (status pending, address snapshot), then insert the ledger row (negative points, referencing the redemption).
-    6.  COMMIT.
-  Two simultaneous redemptions by one customer serialise at step 1; the second sees the reduced balance and fails cleanly.
-• Cancellation. UPDATE redemptions SET status = 'cancelled' WHERE id = :id AND status = 'pending' (must affect one row), then insert the reversing ledger row and restore stock, all in one transaction. The UNIQUE reverses_entry_id blocks a second refund.
-• Isolation level. Keep InnoDB’s default REPEATABLE READ. Correctness comes from explicit locks and conditional updates, not from raising the isolation level.
-2. Steps 1 and 2: gaps, options and decisions
-Each gap uses the same format. Recommendations are chosen for a single developer who must build, demonstrate and explain the system. G1–G26 match the numbered list in your brief; G27–G32 are additional gaps.
-G1. User roles and permissions
-• Missing decision: who can do what, and whether the owner and day-to-day staff share one level of access.
-• Option A: one admin role with full access, plus customer.
-• Option B: owner (batches, revocation, ledger adjustments, staff accounts), staff (fulfil redemptions, view customers and reports) and customer.
-• Recommendation: B, because one role column and one require_role() helper give you least-privilege access very cheaply.
-• Impact: admin accounts live in a separate table, are never created through public registration, and use a separate session namespace. Every admin page calls the same permission check, which limits the damage from a stolen staff login.
-G2. Customer registration and authentication
-• Missing decision: which identifier customers use, whether it is verified, and how passwords are protected.
-• Option A: email plus password, with an emailed verification link.
-• Option B: mobile number plus SMS one-time password.
-• Recommendation: A, because it costs nothing, needs no SMS gateway and is easy to demonstrate.
-• Impact: use password_hash() and password_verify(), call session_regenerate_id(true) on login, and throttle login attempts. Allow claiming only after email verification so mass account creation costs a fraudster a little more effort. Collect the minimum at registration: name, email, password; phone and address are asked only when needed for redemption.
-G3. One unique code per box versus shared codes per product type
-• Missing decision: whether a code identifies one physical box or a whole product type.
-• Option A: one shared code per product type, printed on every box of that product.
-• Option B: one unique random code per physical box.
-• Recommendation: B, because a shared code can be claimed unlimited times, which makes single-use protection impossible.
-• Impact: the codes table grows with production volume (one row per box; hundreds of thousands of indexed rows is comfortable for MySQL), and you need a batch generation, printing and dispatch workflow.
-G4. Product registration and management
-• Missing decision: where product identity lives and how it can change.
-• Option A: a free-text product name typed into each batch.
-• Option B: a products table (SKU, name, description, default points, active flag) referenced by batches.
-• Recommendation: B, because a proper table keeps reports consistent and stops typos splitting your data.
-• Impact: products are deactivated, never deleted, because historic batches and codes reference them.
-G5. QR code and human-readable code formats
-• Missing decision: what is printed on the box and what the QR code contains.
-• Option A: QR code only.
-• Option B: QR code plus a printed human-readable code in groups of four (for example K7QM-4TXD-9HPA) as a typing fallback.
-• Recommendation: B, because scuffed or unscannable QR codes will happen and a typed code avoids support calls.
-• Impact: the QR encodes a claim URL such as https://yourdomain/claim?c=CODE that only pre-fills the form. The claim itself is a logged-in POST with a CSRF token. Never claim on GET, because link previews and scanners fire GET requests. The phone’s own camera can scan it, so no JavaScript scanner is needed. Normalise typed input (uppercase, strip spaces and hyphens).
-G6. Code generation and batch management
-• Missing decision: how codes are produced, how they are stored, and how a batch is managed.
-• Option A: random codes stored in plaintext (simple, searchable).
-• Option B: random codes from random_int() (a cryptographically secure generator) over an alphabet without look-alike characters, storing only a keyed hash (HMAC-SHA-256 with a server-side secret).
-• Recommendation: B, because a database leak or read-only SQL injection would otherwise expose every unclaimed code, and unclaimed codes are effectively cash.
-• Impact: use 12 characters from a 31-character alphabet (letters and digits without 0, O, 1, I, L), about 7.9 × 10^17 combinations, so guessing is impractical. Generate in chunks inside transactions with a UNIQUE index on the hash. Export the plaintext codes once as a CSV for the printer (audited), because they cannot be read back later. A batch records product, quantity, points per code, status, creator and dates; each code also has a non-secret serial number for support references.
-G7. Code activation and dispatch
-• Missing decision: when a printed code becomes claimable.
-• Option A: claimable as soon as it is generated.
-• Option B: a lifecycle of generated → active (on dispatch) → claimed / expired / revoked, with the batch activated only when the cartons leave the factory.
-• Recommendation: B, because codes stolen before dispatch cannot be claimed, and attempts to claim them become a theft signal.
-• Impact: you need an audited “activate batch” action and an operational habit: keep batches small, roughly one per dispatch consignment, so one theft or recall affects limited stock.
-G8. Code expiry
-• Missing decision: whether codes can expire.
-• Option A: codes never expire.
-• Option B: an optional expires_at per batch, set at activation.
-• Recommendation: B, because expiry narrows the window in which an old leaked code is useful and supports time-limited promotions.
-• Impact: expiry is checked inside the same atomic claim UPDATE, so no scheduled job is needed. The customer sees the generic failure message described in G27.
-G9. Stolen, recalled or compromised batches
-• Missing decision: what revocation affects, and what happens to points already issued.
-• Option A: revocation blocks only unclaimed codes.
-• Option B: revocation blocks unclaimed codes and lists already claimed codes from the batch for admin review, where the owner may reverse points customer by customer.
-• Recommendation: B, because automatic clawback would punish innocent buyers, so a human decides case by case.
-• Impact: revocation is owner-only, needs a reason and is audited. Reversals are ordinary ledger reversals. A customer who already redeemed may end up with a negative balance, which blocks redemptions until points are earned back; the terms must say so (G31).
-G10. Customer points allocation
-• Missing decision: where the number of points per code comes from.
-• Option A: fixed points per product.
-• Option B: points set per batch, defaulting from the product.
-• Recommendation: B, because it supports promotions (for example a double-points batch) and leaves old codes unaffected when a product’s default changes.
-• Impact: points_per_code is locked once the batch is activated; the claim reads it through the code’s batch. Points are whole numbers.
-G11. Points expiry
-• Missing decision: whether points lapse.
-• Option A: points never expire.
-• Option B: points expire after N months, oldest first.
-• Recommendation: A, because expiry needs lot tracking for each earning entry, which complicates the ledger for little demonstration value.
-• Impact: the factory carries an open liability, which the dashboard reports (G20). Reserve an expiry entry type so a later job could add expiry as new negative rows without redesign.
-G12. Points transferability
-• Missing decision: whether customers can give points to each other.
-• Option A: points are non-transferable.
-• Option B: customers may transfer points.
-• Recommendation: A, because transfers create a resale and laundering channel that undermines fraud monitoring.
-• Impact: no extra tables and a simpler fraud model: points belong to the account that claimed the code. Households can share one account or gift the physical reward.
-G13. Reward catalogue and reward types
-• Missing decision: what customers can redeem.
-• Option A: physical items only (factory products, merchandise).
-• Option B: physical items plus digital vouchers or coupon codes.
-• Recommendation: A, because digital vouchers need a second inventory of codes and a delivery mechanism, which is another thing to protect.
-• Impact: the rewards table holds name, description, points cost, stock, status and image. Include a reward_type column so vouchers could be added later without schema change. Image upload is admin-only, with type and size validation and server-generated filenames.
-G14. Reward inventory and availability
-• Missing decision: whether rewards are limited and how availability is controlled.
-• Option A: untracked, effectively unlimited availability.
-• Option B: a stock count per reward, decremented atomically, with an is_active flag and optional availability dates.
-• Recommendation: B, because physical goods are finite and overselling creates support problems.
-• Impact: stock is reserved at redemption request with the conditional UPDATE (stock >= 1). Admin stock edits are written to the audit log. At zero stock the reward shows as out of stock.
-G15. Reward redemption and fulfilment
-• Missing decision: what happens between a customer requesting a reward and receiving it.
-• Option A: instant redemption: points are deducted and the redemption is immediately marked done.
-• Option B: a workflow pending → approved → fulfilled (or cancelled), with points deducted at the time of request.
-• Recommendation: B, because physical items need a manual fulfilment step and deducting up front prevents the same points being spent twice.
-• Impact: a redemptions table holds status, a delivery address snapshot (copied at request time, not linked to the live profile), a tracking note and timestamps. Every status change uses a conditional UPDATE (WHERE status = 'pending'), so two admins cannot process the same request. Decide early whether rewards are shipped or collected at the factory counter, because it changes what data you collect.
-G16. Redemption cancellation and point reversal
-• Missing decision: who may cancel a redemption and until when.
-• Option A: only admins can cancel.
-• Option B: customers can cancel while pending; admins can cancel before fulfilled; after fulfilment only an owner adjustment can correct it.
-• Recommendation: B, because self-service cancellation is a small amount of code and reduces admin workload.
-• Impact: cancellation is one transaction: conditional status update, then a reversing ledger entry (positive, referencing the original debit), then stock plus one. The UNIQUE reverses_entry_id prevents a double refund.
-G17. Customer transaction history
-• Missing decision: how much of the ledger customers see.
-• Option A: current balance and a redemption list only.
-• Option B: the full ledger with running balance, readable descriptions and date filters.
-• Recommendation: B, because the ledger already holds the data, and visible history builds trust and cuts “where are my points” queries.
-• Impact: a paginated query joining the reference tables; the running balance uses the MySQL 8 window function SUM(points) OVER (ORDER BY id). Reversals are shown as “Reversal of …” and never hidden.
-G18. Fraud detection and suspicious-activity monitoring
-• Missing decision: what counts as suspicious and what the system does about it.
-• Option A: automatic hard blocks only.
-• Option B: rule-based flags stored in a suspicious_events table with an admin review queue, plus automatic throttling only for repeated failed attempts.
-• Recommendation: B, because simple threshold rules are easy to explain and flagging rather than banning protects honest customers from false positives.
-• Impact: starter rules: a claim attempt on a not-yet-active or revoked code (possible theft, the highest-value signal); many failed attempts; more than N claims per account per day; several accounts sharing one device token or IP in a time window; a burst of claims on sequential serials; a new account that claims and redeems quickly; many accounts redeeming to the same address. Each flag has a status (open, dismissed, confirmed) and a reviewer note.
-G19. Device and account restrictions
-• Missing decision: what is limited per account, per device and per IP.
-• Option A: per-account limits only.
-• Option B: per-account limits plus soft device and IP signals.
-• Recommendation: B, but device and IP only flag or throttle, because cookies clear, phones are shared and mobile IPs are shared.
-• Impact: set a random first-party device token (stored only as a hash) and log it with every claim attempt. Thresholds (for example 10 claims per account per day) live in a settings table so you can tune them. The per-account limit stays the hard control.
-G20. Admin dashboard and reporting
-• Missing decision: which numbers the owner sees and in what form.
-• Option A: basic counters only.
-• Option B: counters plus filterable lists, CSV export and simple server-rendered bars.
-• Recommendation: B without chart libraries, because CSS bars and tables satisfy a demonstration and avoid JavaScript dependencies.
-• Impact: reports cover codes by status per batch, claim rate, points issued, redeemed and outstanding (the programme liability), pending redemptions, stock levels, top claimers and open fraud flags. Add indexes for these queries. CSV exports contain personal data, so they are audited.
-G21. Customer notifications
-• Missing decision: how and when customers are told about events.
-• Option A: in-app messages only.
-• Option B: in-app messages plus transactional email (verification, password reset, redemption status changes).
-• Recommendation: B limited to transactional email, because verification and password reset need email anyway.
-• Impact: write emails to an email_outbox table in the same transaction, and send them through SMTP afterwards (PHPMailer is a library, not a framework, if you want one; a local mail catcher works for the demo). A failed send never rolls back a claim or redemption. No marketing email without separate consent.
-G22. Customer account deactivation or deletion
-• Missing decision: what happens to a customer’s data and points when they leave.
-• Option A: hard-delete the customer row on request.
-• Option B: deactivate the account and anonymise personal data, keeping the customer ID and ledger rows.
-• Recommendation: B, because an append-only ledger cannot lose rows and anonymisation still removes the personal data.
-• Impact: replace name, email, phone and addresses with placeholders. Remaining points are forfeited after a warning (or redeemed first). Closed accounts cannot log in. Admins can also deactivate an account for fraud, with a reason. Address snapshots on old redemptions are anonymised after the retention period (G29).
-G23. Password recovery
-• Missing decision: how customers regain access.
-• Option A: an emailed single-use reset link with an expiring token.
-• Option B: security questions.
-• Recommendation: A, because security questions are guessable and often public.
-• Impact: generate the token with random_bytes(), store only its hash and expiry (for example 30 minutes), and invalidate it after use. Show the same message whether or not the email exists. End other sessions after a reset. The owner resets staff passwords by issuing a one-time link; no password is ever emailed or displayed.
-G24. Security, privacy and audit logging
-• Missing decision: what is recorded, where, and which baseline controls are mandatory.
-• Option A: rely on web-server and PHP error logs.
-• Option B: a dedicated audit_log table, append-only and protected like the ledger, plus error logging outside the webroot.
-• Recommendation: B, because admins need an in-app trail of who did what, and the ledger-style protection is already designed.
-• Impact: log admin logins and failed logins, batch create, activate, revoke and export, reward and stock edits, redemption status changes, adjustments and role changes. Baseline controls: HTTPS; PDO prepared statements with emulation disabled; output escaping with htmlspecialchars; CSRF tokens on every POST; session cookie flags HttpOnly, Secure, SameSite=Lax; session_regenerate_id; least-privilege database accounts; secrets in a config file outside the webroot; display_errors off in production; security headers including a Content Security Policy. Privacy: collect the minimum, record consent at registration, publish a short privacy notice.
-G25. Application architecture and PHP framework considerations
-• Missing decision: how the code is organised, and whether a framework is used.
-• Option A: plain modular PHP: a front controller, a small router, service classes per module, a PDO wrapper and templates.
-• Option B: a micro or full framework (for example Slim or Laravel).
-• Recommendation: A, because it is your fixed constraint and you must be able to explain every line in the viva.
-• Impact: a suggested structure follows. Business rules (claim, redeem, reverse) live in service classes, never in page files, so the transactional logic exists in exactly one place.
-/public         index.php (front controller), assets/
-/src
-  Core/         Router, Db (PDO), Session, Csrf, View, Validator
-  Auth/  Customers/  Catalog/  Codes/  Points/  Rewards/  Admin/  Fraud/
-/templates      views (escaped output only)
-/config         config.php (outside the webroot in production)
-/database       schema.sql, triggers.sql, seed.sql
-Framework as an alternative (for discussion only; the stack stays plain PHP). A framework would supply routing, CSRF protection, validation, migrations and authentication scaffolding. The cost is “magic” you would have to explain, plus a learning curve. It is a reasonable choice for a real production system, but not for this brief. Composer is optional and only useful for PSR-4 autoloading.
-G26. Hosting, deployment and backups
-• Missing decision: where the system runs and how data is protected.
-• Option A: a local environment only (XAMPP, or Docker Compose with PHP-Apache and MySQL 8) for demonstration.
-• Option B: public deployment on a shared host or small VPS with HTTPS.
-• Recommendation: A for the submission, written so that B works, because the project is assessed on demonstration while a deployment checklist shows production thinking.
-• Impact: document the requirements: PHP 8+, MySQL 8, pdo_mysql, HTTPS, and permission to create triggers and separate database users. Some shared hosts restrict this, and trigger creation can need extra privileges when binary logging is on, so verify early. Backups: a daily mysqldump --single-transaction kept off the server, with a tested restore. The ledger and audit tables matter most. Include a reconciliation query in the demo.
-G27. Claim error messages and code-guessing protection
-• Missing decision: how much a failed claim reveals, and how guessing is limited.
-• Option A: specific messages (revoked, expired, already used, not active).
-• Option B: one generic message for every failure, except “you already claimed this code”, with the true reason logged privately.
-• Recommendation: B, because specific messages help guessers and thieves learn which codes exist and what state they are in.
-• Impact: every attempt is logged in claim_attempts (customer, device hash, IP, outcome, time). Five failed attempts in 15 minutes trigger a short cool-down per account and per IP. The failure page offers a “contact support” link so honest customers with a misprinted code are not stranded.
-G28. Support, disputes and manual corrections
-• Missing decision: how the owner fixes a genuine problem such as a misprinted code or a missed credit.
-• Option A: the owner edits the database directly.
-• Option B: an owner-only adjustment tool that writes a ledger entry with a mandatory reason, plus an audit record.
-• Recommendation: B, because direct database edits would break the append-only design.
-• Impact: covers goodwill bonuses, missed credits and unclaimable codes. Keep a support note per customer and a configurable maximum per adjustment. If a misprinted code has to be consumed manually, the same transactional rules apply.
-G29. Data retention and archiving
-• Missing decision: how long data is kept.
-• Option A: keep everything indefinitely.
-• Option B: keep the ledger, redemptions and audit log for the period the owner’s accountant requires, and purge or anonymise operational logs (attempts, expired sessions, reset tokens) after roughly 90 days.
-• Recommendation: B, because it limits personal data held and keeps tables small.
-• Impact: a manual admin script is enough for the demo. Keep the periods configurable and never purge the ledger.
-G30. Time handling
-• Missing decision: which clock decides expiry and rate limits.
-• Option A: PHP server time.
-• Option B: UTC from the database server for every security-relevant comparison.
-• Recommendation: B, because expiry and rate-limit checks then match the stored data even if the PHP and database clocks or zones differ.
-• Impact: store UTC in all created_at and expires_at columns, convert to the factory’s local zone only for display, and set the session time zone explicitly when connecting with PDO.
-G31. Terms and conditions and programme rules
-• Missing decision: the written basis for fraud actions.
-• Option A: informal rules on a web page.
-• Option B: versioned terms accepted at registration.
-• Recommendation: B, because revocation, reversals and bans need a documented basis, and it costs one page plus terms_version and terms_accepted_at columns.
-• Impact: the terms should cover the code-only proof limitation, one account per person, the right to revoke codes and reverse points obtained fraudulently, negative balances, no cash value, the points expiry policy and data use. I am not a lawyer; have the factory owner, ideally with someone legally qualified, review the wording.
-G32. Testing and demonstration data
-• Missing decision: how you will prove the protections work.
-• Option A: manual click-through testing only.
-• Option B: a seed script (products, batches, codes, customers) plus small demonstrations: two parallel claims on one code, two parallel redemptions on one balance, and an attempted UPDATE or DELETE on the ledger.
-• Recommendation: B, because these three protections are the heart of the project and a live demonstration is more convincing than a diagram.
-• Impact: add seed.sql and a CLI or curl-based script with documented expected output for the viva. PHPUnit is optional.
-Summary of recommendations
-• G1 B: owner and staff roles
-• G2 A: email and password, verified
-• G3 B: unique code per box
-• G4 B: products table
-• G5 B: QR plus human-readable code
-• G6 B: random codes, keyed hash stored
-• G7 B: activate after dispatch
-• G8 B: batch-level expiry
-• G9 B: revoke, then review claimed codes
-• G10 B: points set per batch
-• G11 A: no points expiry in version 1
-• G12 A: non-transferable points
-• G13 A: physical rewards only
-• G14 B: tracked stock
-• G15 B: pending, approved, fulfilled workflow
-• G16 B: customer may cancel while pending
-• G17 B: full ledger history
-• G18 B: rule-based flags with review queue
-• G19 B: account limits hard, device and IP soft
-• G20 B: counters, lists, CSV, CSS bars
-• G21 B: transactional email via outbox
-• G22 B: deactivate and anonymise
-• G23 A: emailed reset link
-• G24 B: audit log table
-• G25 A: plain modular PHP
-• G26 A: local demo, deployable
-• G27 B: generic failure messages
-• G28 B: owner adjustment tool
-• G29 B: retention policy
-• G30 B: UTC from the database
-• G31 B: versioned terms
-• G32 B: seed data and live demonstrations
-3. Step 3: Application requirements
-Priorities: [M] must have (core to the brief), [S] should have, [C] could have. IDs allow traceability from requirement to design to test. Gap references (G#) point to the decision that justifies each requirement.
-3.1 Customer module (CUS)
-• CUS-01 [M] Register with name, email and password, accept the current terms (version recorded), and verify the email address through a link before claiming any code (G2, G31).
-• CUS-02 [M] Log in and out using PHP sessions: session ID regenerated on login, idle timeout, throttled login attempts.
-• CUS-03 [M] Reset a forgotten password through an expiring, single-use emailed link (G23).
-• CUS-04 [M] View and edit profile (name, phone, delivery addresses) and change password (current password required). Changing the email address requires re-verification.
-• CUS-05 [M] Claim a code by typing it or by arriving from the QR link, which only pre-fills the form. The claim is a CSRF-protected POST; the confirmation shows points earned and the new balance (G5).
-• CUS-06 [M] Failed claims show one generic message and are rate limited per account and IP (G27).
-• CUS-07 [M] See the current points balance, always computed from the ledger.
-• CUS-08 [M] See a paginated transaction history with running balance, including reversals (G17).
-• CUS-09 [M] Browse active rewards with points cost and stock status, with an indication of what the customer can afford.
-• CUS-10 [M] Redeem a reward, supplying delivery or pickup details. Points are deducted immediately, and a double-click or refresh cannot create a second redemption (a one-time form token plus the transactional checks).
-• CUS-11 [M] List own redemptions with status, and cancel one while it is pending (G16).
-• CUS-12 [S] Receive transactional emails for verification, password reset and redemption status changes (G21).
-• CUS-13 [S] Request account closure, with a warning about forfeited points (G22).
-• CUS-14 [M] Pages are responsive and usable on a phone, because claims will mostly happen there.
-3.2 Product and QR code module (PRD)
-• PRD-01 [M] Owner and staff create, edit and deactivate products (unique SKU, name, description, default points). Products are never deleted (G4).
-• PRD-02 [M] The owner creates a batch for a product with quantity, points per code, optional expiry date and a note. Codes are generated with a cryptographically secure generator and only keyed hashes are stored (G6, G8, G10).
-• PRD-03 [M] One-time export of the batch’s printable codes (human-readable code and QR payload URL), audited. After the export, plaintext codes cannot be retrieved.
-• PRD-04 [S] QR images, or QR payload URLs for the printer’s software, are produced at export time (G5).
-• PRD-05 [M] Batch lifecycle generated → active → expired / revoked is enforced in code, with every transition audited with actor, time and reason. revoked is terminal (G7).
-• PRD-06 [M] Activating a batch records a dispatch reference and date. Quantity and points per code become immutable at activation.
-• PRD-07 [M] Claim verification normalises the input, computes the keyed hash, performs the atomic conditional update (status active, not expired) and writes the ledger credit in the same transaction (section 1B).
-• PRD-08 [M] Revoking a batch immediately blocks its unclaimed codes and lists its already claimed codes for owner review (G9).
-• PRD-09 [S] Support lookup: an admin enters a code and sees status, batch, claimant and claim time, using the same hash lookup.
-• PRD-10 [M] Every claim attempt, successful or not, is recorded (customer, device hash, IP, outcome, time).
-• PRD-11 [M] Each code has a non-secret serial number, and each claim links code, customer, time and device hash.
-3.3 Rewards module (RWD)
-• RWD-01 [M] An insert-only points_ledger holds signed point entries with a type, a reference and an optional reversal link. A balance is the sum of a customer’s entries, and nothing stores a balance directly (section 1C).
-• RWD-02 [M] Database-level enforcement: the application account has SELECT and INSERT only on the ledger, BEFORE UPDATE and BEFORE DELETE triggers reject changes, CHECK (points <> 0), and the reversal link is UNIQUE.
-• RWD-03 [M] Each claim credit, redemption debit and reversal is written in the same transaction as the event it records.
-• RWD-04 [M] Owner and staff create, edit and deactivate rewards (name, description, image, points cost, stock, availability window).
-• RWD-05 [M] Stock is decremented atomically at request and restored on cancellation. Manual stock edits are audited (G14).
-• RWD-06 [M] Redemption locks the customer row, checks the balance, reserves stock, and inserts the redemption and the debit in one transaction (section 1C).
-• RWD-07 [M] Redemption statuses pending → approved → fulfilled or cancelled, each change a conditional update recording actor and timestamp, with a delivery address snapshot (G15).
-• RWD-08 [M] Cancellation inserts a reversing ledger entry, and an entry can be reversed only once (G16).
-• RWD-09 [S] Owner adjustments (positive or negative) require a reason and create an audit entry (G28).
-• RWD-10 [M] Points are non-transferable, have no cash value and do not expire in version 1; the expiry entry type is reserved (G11, G12).
-• RWD-11 [S] A reconciliation report checks that ledger sums per customer are consistent, every reversal references a valid entry, and every claim or redemption entry has its business record.
-3.4 Factory owner and administration module (ADM)
-• ADM-01 [M] A separate admin login with its own table and session namespace. Roles are owner and staff, and permissions are enforced on the server for every request, not merely by hiding menu items (G1).
-• ADM-02 [M] A dashboard showing codes by status, claims today and this week, points issued, redeemed and outstanding, pending redemptions, low-stock rewards and open fraud flags (G20).
-• ADM-03 [M] Customer management: search and list customers, view profile, balance, ledger, claims and redemptions, and deactivate or reactivate an account with a reason.
-• ADM-04 [M] Batch management screens: create, activate and list batches with status counts. Revocation is owner-only.
-• ADM-05 [M] A redemption queue filterable by status, with approve, mark fulfilled and cancel actions, each with a note.
-• ADM-06 [M] Product and reward management screens (PRD-01, RWD-04).
-• ADM-07 [S] Reports with date filters and audited CSV export: claims by day, product and batch; points issued versus redeemed; outstanding points; stock; fulfilment times.
-• ADM-08 [M] A read-only, filterable audit log viewer (G24).
-• ADM-09 [S] A settings page for thresholds (claims per day, failed attempts, cool-down, session timeouts). Every change is audited.
-• ADM-10 [M] Staff account management, owner only: create, disable, and issue a one-time password reset link.
-3.5 Fraud monitoring module (FRD)
-• FRD-01 [M] Record every claim attempt, as in PRD-10.
-• FRD-02 [M] Evaluate the rules in G18: cheap checks at claim time, heavier aggregate checks through an on-demand admin scan or a scheduled script.
-• FRD-03 [M] Store suspicious events with severity, rule, subject (customer, device or batch), status and reviewer notes.
-• FRD-04 [M] An admin review queue with actions: dismiss, confirm, deactivate customer, revoke batch, reverse points.
-• FRD-05 [S] The per-account daily claim limit is a hard block; device and IP thresholds only flag or throttle (G19).
-• FRD-06 [M] A claim attempt on a not-yet-active, revoked or expired code is logged as a high-severity event, because it may indicate theft or a leaked batch.
-• FRD-07 [S] A batch-level claim-velocity view to spot batches being claimed abnormally fast.
-3.6 Cross-cutting and non-functional requirements (NFR)
-• NFR-01 [M] Security baseline: the controls listed in G24, applied to every page.
-• NFR-02 [M] Privacy: minimal data collection, consent and terms acceptance, anonymisation on closure, retention periods (G22, G29).
-• NFR-03 [M] Data integrity: InnoDB, foreign keys, utf8mb4, strict SQL mode, unique and check constraints, and every multi-table write in a transaction.
-• NFR-04 [S] Performance: indexes on the code hash, on ledger customer_id, and on batch and status; claim and redemption should respond in well under a second at demonstration scale.
-• NFR-05 [M] Maintainability: the modular structure in G25, business rules in service classes, configuration separate from code, and comments that help you explain each module.
-• NFR-06 [S] Backup and recovery: the practices in G26.
-• NFR-07 [M] Usability and JavaScript: mobile-first, accessible forms, clear messages. Vanilla JavaScript only for small helpers (disable a submit button after click, confirm dialogs, copy a value), and every function must still work with JavaScript off.
-• NFR-08 [M] Documentation: a README stating the purchase-verification limitation, setup steps, a short threat model, the two protections explained separately, and a demo script.
-• NFR-09 [S] Testing: seed data and the live demonstrations in G32.
-4. Assumptions and open questions
-Working assumptions
-• One factory, one points programme, one time zone, and email as the customer identifier.
-• Rewards are physical; volumes are modest (up to roughly a million codes).
-• No integration with point-of-sale, ERP or shipping systems; dispatch is recorded manually when the owner activates a batch.
-• The owner accepts that purchase cannot be verified and that fraud is reduced and detected, not eliminated.
-Questions for the factory owner (the answers could change the design)
-1.  How many points should a typical box earn, and what is the cost of the cheapest reward?
-2.  Who prints the codes (in-house or a vendor), and can the vendor apply scratch-off panels or print inside lids?
-3.  Are rewards shipped or collected at the factory?
-4.  Is the owner willing to reverse points and allow negative balances after a recalled or stolen batch?
-5.  How long must financial records be kept?
-Suggested next steps: confirm or change the recommendations above, then move to the database schema (tables, constraints, triggers and state machines), then the page and route map, then the implementation of the claim and redemption services first, since they carry the core security logic.
+# ASSUMPTIONS.md: Customer Loyalty Rewards System
+
+Stage 2 document. It keeps assignment requirements, project constraints, verified facts, engineering recommendations, selected assumptions and open verification items **separate**, so a design choice is not mistaken for a client-confirmed fact.
+
+Companion documents: [ARCHITECTURE.md](ARCHITECTURE.md), [DATABASE_DESIGN.md](DATABASE_DESIGN.md), [WORKFLOWS.md](WORKFLOWS.md), [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md), [TEST_PLAN.md](TEST_PLAN.md).
+
+## 0. How this file is organised
+
+| Section | Contents | Can the design rely on it? |
+|---|---|---|
+| 1 | **Confirmed decisions** | Yes |
+| 2 | **Assignment requirements** | Yes; transcribed from the uploaded Assignment 2 PDF |
+| 3 | **Technical facts** | Yes, with the stated verification status |
+| 4 | **Recommendations** | Only if you accept them; they are my engineering judgement |
+| 5 | **Selected design assumptions** (A-01 to A-34) | Adopted for this coursework design under your instruction to make reasonable assumptions; not represented as client-verified facts. |
+| 6 | **Open verification items** (Q-01 to Q-22; most business questions are resolved by selected assumptions) | Only the listed environment, domain and repository checks remain open. |
+| 7 | **Contradictions and gaps found** (C-01 to C-22) and the corrections/remaining gaps recorded across the six design documents | Review required |
+| 8 | Approval tracking | n/a |
+
+ > Section 5 records design assumptions selected to fill gaps because the assignment expressly allows assumptions and you instructed me to choose practical defaults. These are adopted for the coursework design, **not claims that the client separately confirmed them**. References use "[Assumption A-xx]". Section 6 contains only facts that still require a real environment, deployment domain or repository inspection. The uploaded Assignment 2 PDF is the source for section 2; additional technology constraints came from the separate project brief.
+
+**Numbering note.** A-01 to A-34 are the selected design assumptions used by the six documents. Q-19 remains open only because no separate older repository copy was supplied for comparison.
+
+---
+
+## 1. Confirmed decisions
+
+### 1.1 Approved Stage 1 decisions (preserved unchanged)
+
+| # | Decision | Reflected in |
+|---|---|---|
+| 1 | QR generation is **hybrid**: the vendor CSV is the baseline; an optional PHP QR library may be added behind an adapter | ARCH 8.1, WORKFLOWS 2.4 |
+| 2 | **PHPUnit** is used if compatible with the installed PHP | TEST_PLAN section 2 (pending) |
+| 3 | Codes are stored as **HMAC-SHA-256 hashes with key IDs** | DATABASE_DESIGN 3.7, 3.8, section 7 |
+| 4 | **16-character** codes from `23456789ABCDEFGHJKMNPQRSTVWXYZ` (30 symbols), secure random, no biased modulo | WORKFLOWS 2.3 |
+| 5 | QR claim links use the **URL fragment**; manual entry always works | WORKFLOWS 3.1, 3.2 |
+| 6 | The code sits under a **scratch-off layer and/or on an insert inside the box** | WORKFLOWS 3.1 |
+
+**Statement that must stay true in every document:** the code proves the customer possesses a genuine factory-issued secret. It does **not** independently prove a retail sale.
+
+### 1.2 Confirmed through your separate Stage 2 project brief (not the Assignment 2 PDF)
+
+- The project-specific technology and deployment constraints in section 2.3 below.
+- Stage 2 consists of six documents, and `hmac_key_registry` must exist in the database design.
+- No PHP code, no SQL schema files, no created tables, no installed dependencies, no Stage 3 work, and no invented test results or environment information during Stage 2.
+- Stage 2 stays open until all six documents are reviewed for consistency.
+
+---
+
+## 2. Assignment requirements
+
+The following requirements are taken from the uploaded one-page **Assignment 2: Customer Loyalty Rewards System** PDF. This replaces the earlier caveat that the assignment text was unavailable. The PDF does not prescribe a programming language, database, framework or specific code/QR implementation.
+
+### 2.1 Functional requirements stated by the assignment [Requirement]
+
+| ID | Assignment requirement | Current design coverage |
+|---|---|---|
+| AR-01 | Design and build a customer loyalty rewards system for a factory owner whose physical products are sold in boxes | Overall system scope and factory-owner/admin workflows are documented |
+| AR-02 | Address how a customer proves they bought a product | **Covered by the selected coursework model:** each sealed product box contains one concealed, single-use factory code; revealing and successfully claiming that code is accepted as the system's operational proof-of-purchase credential (A-24). It is a deliberate proxy, not independent POS/receipt verification (A-25). |
+| AR-03 | Address how fraud and code reuse are prevented | HMAC-backed code verification, one-time conditional claiming, uniqueness/idempotency controls, rate limiting and fraud events are designed; see ARCH, DATABASE_DESIGN, WORKFLOWS and TEST_PLAN |
+| AR-04 | Address how the factory owner views, manages and monitors rewards | Administrator dashboard, product/batch management, reward catalogue, fulfilment, fraud review, audit and reporting workflows are designed |
+
+### 2.2 Repository and submission requirements stated by the assignment [Requirement]
+
+| ID | Required item | Required content / status in this design |
+|---|---|---|
+| AR-05 | `README.md` | Must explain what the app does, the tech stack, setup/run instructions and a deployed link if available. Planned in PROJECT_STRUCTURE; final content remains a later deliverable. |
+| AR-06 | `ASSUMPTIONS.md` | Must document every gap filled and why that option was chosen. The selected-assumption register records every gap filled and the rationale/limitation for each selected option; assumptions are distinguished from facts confirmed by the factory client. |
+| AR-07 | `AI_LOG.md` | Must record 5–10 key prompts/interactions, including at least two cases where the AI was wrong, how the mistake was noticed and how it was fixed. Planned in PROJECT_STRUCTURE; entries must reflect real interactions, not invented examples. |
+| AR-08 | `ARCHITECTURE.md` | Must include stack choice with reasons, data model and at least one diagram. Present in the architecture document. |
+| AR-09 | Tests | Automated tests or a documented manual test plan **with results**. TEST_PLAN currently contains a plan and an intentionally empty result log; actual results remain a final submission task. |
+| AR-10 | `.env.example` | Placeholder values only; never commit API keys, passwords or secrets. Planned in PROJECT_STRUCTURE. |
+| AR-11 | Commit history | Regular, meaningful commits must show project evolution; one final-code-only commit loses marks. This is a development/repository practice, not a document or file. |
+| AR-12 | Submission repository | Submit one public GitHub repository accessible without login. |
+| AR-13 | Live demonstration | A short live demo may be requested; this is a possibility to prepare for, not a guaranteed event. |
+
+### 2.3 Project-specific technology and delivery constraints [Confirmed project constraints; not stated in the Assignment 2 PDF]
+
+These constraints were supplied separately as part of the project brief. They must be followed for this project, but must not be misattributed to the uploaded assignment PDF.
+
+| ID | Project constraint |
+|---|---|
+| P-01 | PHP 8, MySQL or MariaDB, **PDO** for all database access |
+| P-02 | HTML inside PHP files; CSS3 in separate CSS files; JavaScript only inline in PHP files and only when necessary |
+| P-03 | No React, Vue, Angular, Node.js, separate `.html` files or separate `.js` files |
+| P-04 | Windows XAMPP is the primary environment; must also work on Ubuntu (Apache, PHP, MySQL/MariaDB) |
+| P-05 | PHP libraries, Composer and test frameworks are allowed but must be justified by real compatibility |
+| P-06 | Use a simple architecture appropriate to the project; avoid unnecessary microservices (also an engineering recommendation in ARCH section 2) |
+
+### 2.4 Current designed solution scope (design choices, not individual assignment requirements)
+
+The current design elaborates the assignment through customer registration/login; products; production batches; unique code generation; vendor CSV export; batch activation; QR and manual code claiming; points history; reward catalogue and redemption; administrator management; fraud monitoring; audit records; and reports. These are selected solution features and Stage 1 decisions. The assignment names the factory owner but does not define separate staff roles. For AR-02, the project adopts the concealed per-box code as the purchase-proof credential under A-24, while clearly disclosing that no retailer/POS transaction is independently verified under A-25.
+
+---
+
+## 3. Technical facts
+
+F-01 to F-06, F-08 to F-10, F-12 and F-13 retain their Stage 1/general-knowledge verification status as shown. F-07, F-11 and F-14 to F-15 were checked against official MySQL/MariaDB, IETF, PHP, MDN and W3C documentation during this review; implementation and browser behavior still require Stage 3 tests.
+
+| ID | Fact | Where used | Status |
+|---|---|---|---|
+| F-01 | PHP `random_int` uses the operating system's secure random source and returns uniform integers | Code generation | From Stage 1 research (PHP manual); verify |
+| F-02 | `hash_equals()` compares strings in constant time | CSRF, key check | PHP manual (Stage 1) |
+| F-03 | `password_hash` / `password_verify` are the supported way to store and check passwords; use a column of 255 characters | `users.password_hash` | General knowledge of PHP manual; verify |
+| F-04 | `htmlspecialchars` default flags include quote handling since PHP 8.1 | Escaping | ARCH 6.4 (Stage 1) |
+| F-05 | Browsers do not send the URL fragment in the HTTP request | QR claim link | Stage 1 (HTTP/URL standards); confirm in browser test |
+| F-06 | InnoDB: at REPEATABLE READ a plain SELECT uses a snapshot from the first consistent read; at READ COMMITTED each plain SELECT sees the latest committed data; locking reads see the latest committed row | DATABASE_DESIGN 6.2 | Stage 1 (MySQL manual); verify |
+| F-07 | MySQL InnoDB and MariaDB unique indexes permit multiple NULL values in nullable unique-index columns | Nullable unique ledger reference columns | Official [MySQL 8.4 manual](https://dev.mysql.com/doc/refman/8.4/en/create-index.html) and [MariaDB index guide](https://mariadb.com/docs/server/mariadb-quickstart-guides/mariadb-indexes-guide), checked 2026-11-25 |
+| F-08 | PDO MySQL `rowCount()` reports changed rows by default | Conditional updates | General knowledge of PHP manual; verify |
+| F-09 | DDL statements in MySQL/MariaDB cause an implicit commit | Migrations | General knowledge; verify |
+| F-10 | `utf8mb4_unicode_ci` exists in both MySQL and MariaDB | Collation | ARCH 6.6; `[Unresolved]` confirm with `SHOW COLLATION` |
+| F-11 | Under HTTP semantics, a 3xx `Location` value that omits a fragment inherits the original fragment. Supplying an explicit empty fragment (`#`) prevents that inheritance. | QR claim redirect to login (WORKFLOWS 1.2 and 3.1) | [IETF RFC 9110 §10.2.2 and §17.11](https://www.rfc-editor.org/rfc/rfc9110.html), checked 2026-11-25; test browser handling in Stage 3 |
+| F-12 | chillerlan/php-qrcode lists PHP 8.2+ and endroid/qr-code lists PHP ^8.4 for current releases | Optional QR | ARCH 8.1 (Stage 1); neither installed or tested |
+| F-13 | 30^16 is about 4.3 × 10^23 (about 78.5 bits) | Code space | Arithmetic from decision 4 |
+| F-14 | `php://memory` always stores stream data in memory; `php://temp` spills to a temporary file after its configured threshold (2 MB by default) | In-memory CSV export | Official [PHP stream wrapper manual](https://www.php.net/manual/en/wrappers.php.php), checked 2026-11-25 |
+| F-15 | A CSP nonce must be unpredictable and unique per response; the same nonce is placed in the policy and on the intended script/style element. W3C CSP3 recommends at least 128 bits from a cryptographically secure RNG. | Inline-script CSP | [MDN CSP guide](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CSP) and [W3C CSP Level 3](https://www.w3.org/TR/CSP3/), checked 2026-11-25 |
+
+---
+
+## 4. Recommendations (engineering judgement, not assignment requirements)
+
+You must be able to explain and defend each of these. All are labelled [Recommendation] where they appear.
+
+| ID | Recommendation | Document |
+|---|---|---|
+| RC-01 | Layered monolith, no framework | ARCH section 2 |
+| RC-02 | Ledger is the only source of the balance; no balance column | DATABASE_DESIGN 9 |
+| RC-03 | `READ COMMITTED` plus customer-row lock for points-changing transactions | DATABASE_DESIGN 6.2, 6.3 |
+| RC-04 | Fixed lock order users → batches → codes → redemptions → rewards | DATABASE_DESIGN 6.3 |
+| RC-05 | Decide by **conditional update** and changed-row count, not by read-then-write | DATABASE_DESIGN 6.1 |
+| RC-06 | Nullable unique reference columns on the ledger as the duplicate backstop | DATABASE_DESIGN 3.11 |
+| RC-07 | `BINARY(32)` for `code_hash`; hex conversion only in the repository | DATABASE_DESIGN 3.8 |
+| RC-08 | `DATETIME` in UTC rather than `TIMESTAMP` | DATABASE_DESIGN 1 |
+| RC-09 | No `ON DELETE CASCADE`; deactivate instead of delete | DATABASE_DESIGN 1 |
+| RC-10 | Least-privilege database user; INSERT and SELECT only on ledger and audit tables | DATABASE_DESIGN 1 |
+| RC-11 | `key_check_value` column (HMAC of fixed text) to verify `.env` keys against the registry without storing secrets | DATABASE_DESIGN 3.7 |
+| RC-12 | Generation and export in **one request**, plaintext only in memory, two commits | DATABASE_DESIGN 8.2, WORKFLOWS 2.3, 2.4 |
+| RC-13 | Cross-key duplicate check at code generation | DATABASE_DESIGN 7.4 |
+| RC-14 | Fixed prefix inside the HMAC input (`loyalty-code-v1:` + code) | WORKFLOWS 2.3 |
+| RC-15 | Use an explicit empty redirect fragment and a fixed allowlisted return token; customer rescans or types after login | WORKFLOWS 1.2, 3.1 |
+| RC-16 | One-time `idempotency_token` on the redemption form | DATABASE_DESIGN 3.13 |
+| RC-17 | Fraud events and failed attempts recorded **outside** the rolled-back transaction | ARCH 3.2; DATABASE_DESIGN 6.1 |
+| RC-18 | Password check even when the account does not exist; generic login and registration messages | WORKFLOWS 1.1, 1.2 |
+| RC-19 | `rate_limited` rows are not counted toward the limit | DATABASE_DESIGN 3.10 |
+| RC-20 | Keyset paging ("older than the last id") for history | DATABASE_DESIGN 9 |
+| RC-21 | Key rotation as an operator procedure with a command-line helper | WORKFLOWS 6.7 |
+| RC-22 | Virtual host with `DocumentRoot = public/` on both XAMPP and Ubuntu | PROJECT_STRUCTURE 7, 8 |
+
+---
+
+## 5. Selected design assumptions (A-01 to A-34)
+
+The assignment explicitly permits assumptions for missing requirements. The following choices are therefore adopted as the working coursework design. They are **not represented as statements independently confirmed by the factory owner**. They may be changed only if later client facts, legal obligations or environment checks require it; every selected choice has a rationale and is reflected in the companion documents.
+
+| ID | Selected assumption | Why this option was chosen / boundary | Status |
+|---|---|---|---|
+| A-01 | Email is the unique login identifier; phone is profile/contact data only. | Simple account recovery and unique lookup without SMS infrastructure. | Adopted for design |
+| A-02 | Registration is open; email verification is not required in the first version. | No email service or verification workflow is required for the coursework demo. Generic registration responses still prevent account enumeration. | Adopted for design |
+| A-03 | Passwords must be at least 12 characters; no arbitrary character-class rules are imposed. | Encourages length and passphrases while keeping validation understandable. Passwords are stored only as password hashes. | Adopted for design |
+| A-04 | Block further logins after 5 failed logins per account or IP in 15 minutes. Block code claims after 10 invalid code attempts per account or IP in 15 minutes. Twenty successful claims per account in a rolling 24 hours creates a fraud-review alert but does not automatically block legitimate claims. Ten or more distinct accounts claiming from one IP within 1 hour also creates an alert. `rate_limited` claim-attempt rows do not count toward the claim failure limit; a login request rejected solely because its lockout is already active does not create another `login_attempts` failure row. | Separates abuse-prevention lockouts from review-only signals, reducing the chance of blocking a customer with many genuine purchases. Keep thresholds configurable and tune before production. | Adopted for design |
+| A-05 | Each product has a default points value per box/code; a batch copies that value and may override it when created. | Preserves historical batch economics when a product default changes later. | Adopted for design |
+| A-06 | One reward unit is issued per redemption; every reward has finite stock. | Avoids unlimited-stock and quantity edge cases in the first version. | Adopted for design |
+| A-07 | The first administrator is created once through a protected CLI script; additional administrators, if needed, are also created through the controlled CLI process. No public admin registration or web-based administrator management. | Prevents public privilege escalation and avoids inventing a multi-role admin hierarchy. | Adopted for design |
+| A-08 | Redemption states are `pending`, `fulfilled`, and `cancelled`. Only an administrator may cancel a pending redemption; cancellation creates a ledger reversal and restores one unit of stock. A fulfilled redemption cannot be cancelled through the normal workflow. | Provides a simple fulfilment lifecycle and preserves accounting history. | Adopted for design |
+| A-09 | Points do not expire. | Avoids expiry jobs and expiry-related disputes in the initial system. | Adopted for design |
+| A-10 | Maximum batch size is 1,000 box codes per generation/export request. | Bounds memory and request time for a simple PHP/XAMPP application. The cap must still be load-tested against the actual PHP environment; reduce it if required, do not increase it without retesting. | Adopted for design; runtime check remains |
+| A-11 | `claim_attempts` and `login_attempts` are retained for 90 days; technical application logs for 30 days. `fraud_events` and reconciliation records are retained for at least 2 years and are not automatically deleted in the first version. `audit_logs` are append-only and are not automatically deleted in the first version. An operator manually runs the documented monthly retention-maintenance command for the attempt rows and technical logs. | Gives the coursework build a concrete minimisation schedule without undermining immutable audit history. Before real customer data is used, the factory owner must approve legally appropriate periods and any archive/disposal process. | Adopted for coursework; legal review before production |
+| A-12 | A retired HMAC key remains available for verification of every code row created with it, including claimed and voided codes, for as long as those code rows are retained. Routine key rotation changes the active key but does not revoke historical keys. Revoke a key only for suspected or confirmed compromise. The initial system has no routine code-row purge, so normal key rotation never revokes historical keys. Emergency revocation makes associated codes unverifiable and requires batch/code incident handling. | Preserves both legitimate unclaimed-code claims and the same-customer repeat-claim response (A-23) after rotation. Since code rows are retained in the initial design, normal retirement does not mean routine revocation. | Adopted for design |
+| A-13 | Codes have no time-based expiry. They remain claimable while unclaimed and associated with an active batch; voiding is the invalidation mechanism. | Avoids surprise expiry for products sitting in retail inventory. | Adopted for design |
+| A-14 | Rewards are collected at a designated factory collection point; the system does not collect a delivery address or integrate a courier in the first version. | Keeps personal data and delivery logistics out of scope. | Adopted for design |
+| A-15 | Code export is administrator-only, POST-only, requires password re-entry, is one-time per batch, audited, and streamed from memory without saving a file. | Plaintext codes are high-value secrets; the export must not be recoverable from server storage. | Adopted for design |
+| A-16 | There is one administrator permission tier initially; the factory owner is the initial administrator. | Matches the named client actor without inventing supervisors/operators. | Adopted for design |
+| A-17 | A closure request sets account status to `closed` immediately and disables login. The factory owner may cancel the closure and reactivate the account after identity checks during a 30-day recovery window. After 30 days, replace the email with a unique non-routable `closed-user-<id>@example.invalid` value; set `customer_profiles.full_name` to `Closed account`, clear `phone` and `contact_details`, and set `anonymised_at`. Keep ledger, redemption, audit, fraud and reconciliation references needed for integrity. | Preserves financial/reward integrity while allowing a short recovery period and removes direct profile identifiers without breaking foreign keys or the non-null name field. Final retention must be checked before production data is used. | Adopted for coursework; legal review before production |
+| A-18 | Suspension and reactivation require an administrator reason category and an audit record. | Makes sensitive account-state changes explainable and reviewable. | Adopted for design |
+| A-19 | No cached points balance is stored; the balance is calculated from the append-only ledger. | Keeps one source of truth and avoids cache drift at coursework scale. | Adopted for design |
+| A-20 | Reconciliation is run manually by an administrator; it is not a scheduled background job. | Avoids a scheduler/worker dependency in the initial PHP deployment. | Adopted for design |
+| A-21 | For the college/demo deployment, make a manual database backup before major changes and keep one separate encrypted copy. The factory owner is responsible for arranging the copy. | Suitable for a manually operated demo. Production backup frequency and recovery targets require a separate operations policy. | Adopted for coursework |
+| A-22 | Batch activation is a deliberate administrator action after packaging and release checks. Voiding an active batch blocks remaining unclaimed codes; already-claimed points are not silently reversed. | Stops claims before physical packaging/release is ready and protects ledger history. | Adopted for design |
+| A-23 | If a customer submits a code they already claimed, show that same customer "You have already claimed this code". For all other invalid/used/voided/inactive outcomes, use the same generic failure message. | Helpful repeat-submission feedback without revealing code validity to another account. | Adopted for design |
+| A-24 | **Purchase proof:** every retail box contains exactly one unique 16-character code under a scratch-off layer or on an insert inside a tamper-evident sealed box. The customer reveals and claims that code after buying/opening the box. Possession of a valid concealed code is accepted as the project's operational proof-of-purchase credential. | Reuses the approved Stage 1 code/QR design and is practical without retailer/POS integration. Batch activation occurs only after factory packing and release checks. It proves possession of the concealed box credential, not the payment transaction itself. | Adopted for coursework design |
+| A-25 | No retailer/POS integration, receipt upload or manual receipt-review workflow is included in the first version. | Avoids collecting receipts and building a second verification process. The system cannot independently confirm sale date, price, retailer or named purchaser. This limitation must be disclosed in the demo and README. | Adopted for coursework design |
+| A-26 | A valid reversal may make a customer's ledger balance negative if the points were already spent. Redemptions are blocked until the calculated balance is at least the reward cost; later earned credits reduce the deficit. | Preserves the full accounting reversal rather than hiding an already-spent credit. | Adopted for design |
+| A-27 | The factory owner is the named custodian of the encrypted HMAC key backup. The backup is kept offline or in a dedicated encrypted vault, separate from the application host and database backup; its passphrase is stored separately. | Preserves the key-to-key-ID association while limiting access to one accountable custodian. | Adopted for coursework; production custody review |
+| A-28 | Local XAMPP demonstrations may use `http://localhost` with the Secure cookie flag off. Any deployment reachable over a network or used with real customers/codes must use HTTPS and Secure cookies. | Distinguishes a local demo exception from safe public deployment. | Adopted for design |
+| A-29 | Initial XAMPP/Ubuntu deployment connects directly to Apache without a reverse proxy and uses the server-provided client address. If a trusted proxy is introduced later, forwarded IP headers are accepted only from explicitly allowlisted proxy addresses. | Avoids trusting spoofable client-supplied forwarding headers. | Adopted for design |
+| A-30 | Suspension/closure reason categories are: `fraud_review`, `abuse`, `customer_request`, `security_concern`, `legal_or_retention`, `admin_correction`, and `other`. Free-text reason is optional except where the workflow requires an explanatory note. | Provides a small consistent vocabulary for audit and reporting. | Adopted for design |
+| A-31 | If a customer opens a QR link while logged out, `claim.php` redirects to `/login.php?return=claim#`: the fixed `return=claim` token is allowlisted, and the explicit empty fragment prevents the original code fragment from being inherited. After successful login the customer returns to `claim.php` without the code and rescans or manually enters it. No code is stored in the session. | The explicit empty fragment prevents redirect inheritance; a fixed route token returns the customer to the interrupted task without accepting an arbitrary redirect URL or retaining the secret. | Adopted for design; browser test required |
+| A-32 | Default vendor CSV columns are `batch_code`, `row_number`, `product_sku`, `points`, `code`, `claim_url`; code text is grouped into four-character blocks for printing, while claim normalisation removes separators. | Gives the print vendor enough context to assign labels to a product/batch without exposing HMAC values or key material. Vendor-specific transformation can be agreed later without changing claim semantics. | Adopted default; vendor format may vary |
+| A-33 | No email-based forgot-password or automated reset flow is included initially. A customer who can log in may change their password; a locked-out customer contacts the factory owner for identity-checked support/reset. | Keeps email delivery out of scope without leaving account recovery undefined. | Adopted for coursework design |
+| A-34 | Product default points and batch override points are whole numbers from 1 to 10,000 per box. Reward cost is a whole number from 1 to 1,000,000 points. | Provides explicit input bounds for service validation and prevents a free-form/unbounded numeric field; the values are comfortably within the planned signed ledger integer range for a single transaction. | Adopted for coursework; tune only with documented client/business need |
+
+---
+
+## 6. Open verification items
+
+Business and workflow gaps that can reasonably be filled for this coursework have been decided in section 5. The following items still need external information or a real environment; they do not invalidate the design itself.
+
+| ID | Item still to verify | Needed from | When it matters | Status |
+|---|---|---|---|---|
+| Q-01 | `php -v`, `php -m`, and `composer --version` in both XAMPP CLI and Apache web context | Your machine | Before selecting PHPUnit or any optional QR library; before Stage 3 | Open |
+| Q-02 | MySQL/MariaDB version; availability of `utf8mb4_unicode_ci`; CHECK-constraint enforcement; support for the selected locking syntax | Your machine | Before finalizing and running the schema in Stage 3 | Open |
+| Q-04 | Final public deployment domain/base URL | Factory owner / deployment | Before producing labels/QR codes for a real distribution batch. For development, use a local configurable base URL. | Open; not a Stage 2 blocker |
+| Q-17 | Actual PHP `memory_limit` and `max_execution_time` in Apache | Your machine | Before testing the 1,000-code batch cap; lower A-10 if the environment cannot support it | Open |
+| Q-19 | Whether older repository design files exist and whether they differ from this six-document set | Existing repository | Before replacing older files/committing the reviewed set | Open; repository not supplied |
+
+The following questions have been resolved by the selected assumptions above: Q-03 (A-01), Q-05 (A-10), Q-06 (A-02/A-33), Q-07 (A-26), Q-08 (A-14), Q-09 (A-07/A-16), Q-10 (A-27), Q-11 (A-11/A-17), Q-12 (A-04), Q-13 (A-09), Q-14 (A-28), Q-15 (original assignment PDF inspected), Q-16 (A-29), Q-18 (A-30), Q-20 (A-32 default layout), Q-21 (A-31), Q-22 (A-24/A-25), and the numeric points bounds (A-34). Q-20 may be revisited if the actual vendor supplies a different required layout.
+
+---
+
+## 7. Contradictions and gaps found
+
+This section records the initial findings and their final disposition after reviewing all six documents and the original Assignment 2 PDF. Selected assumptions are deliberately distinguished from verified client facts; the remaining open items are environment/domain/repository checks.
+
+| ID | Finding | Type | What the companion documents do | Proposed correction to ARCHITECTURE.md |
+|---|---|---|---|---|
+| C-01 | ARCH 13.9 says plaintext exists "only during the controlled export process" yet lists `generated` and `exported` as separate states, with "create the export" as a later step. Plaintext cannot be kept between steps without storing it, which §7 item 8 and §10 forbid. | Contradiction in lifecycle | Generation and export happen in **one request**: Commit A (`generated`), Commit B (`exported`), then the CSV is sent from memory. If delivery fails, void and regenerate. States are unchanged. (DATABASE_DESIGN 8.2, WORKFLOWS 2.3, 2.4) | Add one sentence to 13.9: "generated and exported are reached in the same request; if the download fails the batch is voided." |
+| C-02 | ARCH §3 listed 13 tables, omitting login rate limiting, status history and reconciliation records. | Inventory gap | The companion database design defines the four additional tables; ARCH §3 now lists and assigns them. | The four additional tables and their owning modules are now listed in ARCHITECTURE §3 and DATABASE_DESIGN §2. (Completed.) |
+| C-03 | ARCH §3 named multiple writers for `codes` and `batches`, conflicting with §3.2 single-owner rule; ledger writers were also not explicit. | Ownership inconsistency | Database/workflow docs name the transition owners and sole LedgerService writer; coordinators delegate. | ARCHITECTURE §3 and §3.2 now specify transition ownership and sole LedgerService ledger inserts. DATABASE_DESIGN and WORKFLOWS delegate coordinated writes accordingly. (Completed.) |
+| C-04 | "Designated authorized administrator" conflicted with the one-tier administrator model. | Contradiction | The factory owner is the initial administrator; any additional administrator is created through the controlled CLI procedure only (A-07/A-16). | ARCHITECTURE §13.1 and WORKFLOWS §6.1 now use the same one-tier/CLI-only rule. Resolved by selected assumption. |
+| C-05 | ARCH §7 says export is owner-only, but no owner role exists. | Contradiction | Export is administrator-only under the single initial tier. | ARCHITECTURE §7 now says administrator-only, consistent with the one-tier role model. (Completed.) |
+| C-06 | Generic invalid/already-used messages could confuse a customer double-clicking a code they just claimed. | Refinement | A-23 selects a same-customer repeat-claim confirmation; all other invalid/used/voided/inactive outcomes remain generic. TEST_PLAN DC-01 and CC-02 cover it. | Security summary and tests use the same selected message rule. Resolved by A-23. |
+| C-07 | Older repository documents (if any) were not available for comparison. | Unknown / evidence gap | The supplied ZIP contained the five companion documents and the separate architecture upload; no older `ARCHITECTURE 0.1` repository files were supplied. | Do not assume no older files exist; compare with the actual Git repository before replacing or committing documents (Q-19). |
+| C-08 | ARCH §1.2 row 6 says the scratch-off/insert placement is "in ASSUMPTIONS" while it is a **confirmed** decision. | Presentation | Recorded here under Confirmed (section 1.1) | No change needed. |
+| C-09 | ARCH §6.8 and CSP: inline JavaScript is required by the project constraints, but the original nonce handling was unverified. | Security design gap | Selected a per-response cryptographically random nonce (at least 128 bits), reused only between that response's CSP header and intended inline script tags; no `unsafe-inline`, inline event-handler attributes or `eval`. | ARCH §6.8, PROJECT_STRUCTURE §3 and TEST_PLAN SC-12 now define the nonce model. Official MDN/W3C guidance is recorded as F-15; browser enforcement remains a Stage 3 test. (Resolved at design level.) |
+| C-10 | Assignment AR-02 asks how a customer proves purchase, while Stage 1 correctly limits what the concealed code proves. | Requirement interpretation / assumption | Resolved for coursework by A-24: each sealed retail box carries one hidden, unique code, accepted as the operational proof-of-purchase credential. A-25 states that this is not independent receipt/POS verification. | Architecture and workflow now describe the chosen proxy and its residual limitation; no Stage 1 cryptographic decision changed. |
+| C-11 | `PROJECT_STRUCTURE.md` did not list the assignment-required `AI_LOG.md`, and did not document the public-repository/meaningful-commit submission rules. | Repository deliverable gap | Added `AI_LOG.md` and a submission-deliverables section; AI entries must be factual and commit history is a repository practice. | No architecture change; final repository must satisfy the assignment's repository checklist. |
+| C-12 | Technology constraints and several designed features were described as assignment requirements even though the uploaded PDF does not state them. | Source classification error | Section 2 separates the PDF's actual requirements from separately supplied project constraints and selected solution scope. | Architecture labels technology constraints as project constraints, not as requirements sourced from the assignment PDF. |
+| C-13 | The test plan has no executed results yet, while the assignment requires tests or a manual test plan with results. | Final-submission completion gap | The empty result log is honestly retained for Stage 2; it is not presented as satisfying the final test-results requirement yet. | Add an explicit final-submission condition; do not fabricate results. |
+| C-14 | Assignment requires `ASSUMPTIONS.md` to explain why each requirement gap was filled with its chosen option; the prior table recorded why confirmation was needed but not the rationale for the proposal. | Documentation gap | Added a rationale for every selected assumption A-01–A-34, explicitly distinguishing engineering reasoning from client-confirmed facts. | No architecture change. |
+| C-15 | C-06 and TEST_PLAN DC-03 incorrectly pointed to DC-13 for the same-customer repeat-claim test, but DC-13 tests that claim-attempt rows contain no plaintext. | Cross-reference error | Corrected references to DC-01 (same-customer repeat claim) and CC-02 (concurrent double-click); both are marked as depending on A-23. | No architecture change. |
+| C-16 | Duplicate test IDs (FN-19/FN-20 and CE-15) made traceability ambiguous; some tests still depended on business questions now answered by selected assumptions. | Test-plan consistency | IDs are made unique, expected outcomes updated to A-01–A-34, and tests remain Not run. | No architecture change; TEST_PLAN traceability updated. |
+| C-17 | ARCH, database and workflow documents described overlapping write ownership for profiles, account status, rewards stock and reconciliation records. | Cross-document ownership contradiction | A single owning module/repository is now assigned to every table; admin and redemption workflows call the owning service methods instead of writing directly. | ARCH §3 and §3.2, DATABASE_DESIGN §2, WORKFLOWS §8 and PROJECT_STRUCTURE §4.3 now use the same map. (Completed.) |
+| C-18 | The original key-revocation condition could revoke a retired key after all unclaimed codes were claimed/voided even though A-23 still needs to verify previously claimed codes for same-customer repeat feedback. | Security lifecycle contradiction | A-12 now retains retired keys for every retained code row; routine rotation never revokes them. Emergency revocation remains available for compromise. | DATABASE_DESIGN 7.2–7.4, WORKFLOWS 6.7, ARCH 13.11 and TEST_PLAN KR-05/KR-09/KR-18 align. (Completed.) |
+| C-19 | The original A-11 said audit records were retained for a finite two-year period while the architecture/database made audit logs append-only with no delete privilege. | Retention contradiction | A-11 now retains audit logs without automatic deletion in the initial design; fraud/reconciliation records are kept at least two years; only attempt rows and technical logs are routinely pruned. | ASSUMPTIONS A-11, WORKFLOWS 6.8, PROJECT_STRUCTURE 4.4 and TEST_PLAN SC-11 align. (Completed.) |
+| C-20 | TEST_PLAN reused `KR-18` for both historical-key repeat-claim behavior and backup-custody verification. | Test traceability | The backup-custody test is now `KR-19`; all test IDs are unique. | TEST_PLAN §4.11 and ASSUMPTIONS C-18 cross-references now distinguish the tests. (Completed.) |
+| C-21 | Reward catalogue administration (create, edit, restock, deactivate and server-side authorization) was described in WORKFLOWS but lacked dedicated tests. | Test coverage gap | Added RS-14 to RS-18 for reward administration and customer-denial behavior. | TEST_PLAN §4.9 now covers the reward-management workflow and permissions. (Completed.) |
+| C-22 | DATABASE_DESIGN required export plaintext to remain in memory but named `php://temp`, which can spill to a temporary file. | Storage-policy contradiction | Selected a string buffer or `php://memory`; explicitly prohibited `php://temp` for this export. Verified the stream behavior against the PHP manual (F-14). | DATABASE_DESIGN §8.2 and ASSUMPTIONS F-14 now agree. (Resolved at design level.) |
+
+### 7.1 Cross-document checks already made
+
+- ARCH references **DATABASE_DESIGN section 6** (transactions and READ COMMITTED): present.
+- ARCH references **WORKFLOWS 2.3** (code format) and **section 3** (QR claim): present with the same numbers.
+- ARCH references **TEST_PLAN section 2** (PHPUnit compatibility): present, marked pending.
+- All 17 database tables in DATABASE_DESIGN §2 are represented in ARCHITECTURE §3 with exactly one owning module; ARCHITECTURE §3.1 includes a high-level data-model diagram, with the full ERD in DATABASE_DESIGN §4.2.
+- Batch states, key states, ledger sign convention and lock order are specified in DATABASE_DESIGN and referenced consistently by workflows and tests. Retired-key verification remains available for all retained codes so A-23 repeat-claim feedback continues after rotation (C-18).
+- Ledger writes are delegated to LedgerService; the workflow matrix now makes that delegation explicit.
+- HMAC secrets remain outside the database; registry metadata, key IDs, rotation, backup association and custody are documented. Retired keys remain usable for historical codes; emergency revocation is explicitly treated as an incident response. (C-18)
+- Attempt/log cleanup is distinct from immutable audit retention; the monthly CLI maintenance operation does not delete ledger or audit rows. (C-19)
+
+---
+
+## 8. Approval tracking
+
+The project owner authorized the reviewer to select practical assumptions. Record that authorization without treating the resulting choices as facts confirmed by the factory client.
+
+| ID | Decision | Date | Notes |
+|---|---|---|---|
+| A-01–A-34 | Adopted for coursework design under the project owner's instruction to make reasonable assumptions | 2026-11-25 | These are working design defaults, not independently client-confirmed facts; see each rationale and limitation in section 5. |
+
+The coursework design assumptions A-01 to A-34 were selected under the project owner's instruction to make reasonable assumptions. They are adopted design defaults, not client-verified facts. Stage 2 document consistency is complete. The remaining open items Q-01, Q-02, Q-04, Q-17 and Q-19 are environment, domain or repository checks; they do not leave a functional assignment requirement without a designed solution. Assignment AR-02 is covered by A-24/A-25 with the stated proof limitation. The test result log remains empty because no tests have been run.
