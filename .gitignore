@@ -1,0 +1,27 @@
+# Environment secrets
+/.env
+.env
+
+# Runtime data
+/storage/logs/*.log
+/storage/cache/*
+!/storage/logs/.gitkeep
+
+# Local exports and backups (never commit plaintext product codes)
+/exports/
+/backups/
+*.sql.gz
+*.dump
+
+# Editor / OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Optional dependency / test artifacts
+/vendor/
+.phpunit.cache/
+coverage/
