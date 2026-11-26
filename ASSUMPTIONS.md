@@ -200,6 +200,13 @@ The assignment explicitly permits assumptions for missing requirements. The foll
 | IC-02 | Registration uses bcrypt cost 12 and enforces a maximum password length of 72 bytes in addition to the adopted A-03 minimum of 12 characters. | A fixed cost keeps the dummy unknown-account login hash aligned across PHP 8 runtimes; the byte cap prevents bcrypt truncation. This is an implementation safeguard, not a client-specified complexity rule. |
 
 
+### 5.2 Stage 6 implementation conventions (technical details, not new client requirements)
+
+| IC-03 | Administrator-entered batch labels are 1–30 characters and use letters, numbers, dot, underscore or hyphen; they are unique by the database constraint. | Implements the human-readable `batch_code` label required by WORKFLOWS 2.2 and UI_UX_SPEC. No new business workflow is introduced. |
+| IC-04 | Password re-entry for the one-time CSV export records attempts through the existing `login_attempts` repository and login throttle configuration. | Reuses the approved account/IP throttling mechanism rather than introducing a parallel export-password rate-limit store. |
+| IC-05 | The approved CSV code formatting uses four-character groups joined by hyphens; batch labels and product SKUs are constrained to start with an alphanumeric character. | Implements A-32/WORKFLOWS 2.4 and avoids spreadsheet formula prefixes in the generated CSV data fields. |
+
+
 ## 6. Open verification items
 
 Business and workflow gaps that can reasonably be filled for this coursework have been decided in section 5. The following items still need external information or a real environment; they do not invalidate the design itself.

@@ -1,6 +1,6 @@
 # PROJECT_STRUCTURE.md: Customer Loyalty Rewards System
 
-Stage 2 design document, updated with a Stage 5 implementation-status note. The original tree remains the planned full application layout; Stage 4 created the foundation and Stage 5 implemented the listed customer-facing files and services. The presence of a planned file in this design does not mean its future admin functionality is implemented.
+Stage 2 design document, updated with Stage 5 and Stage 6 implementation-status notes. Stage 4 created the foundation, Stage 5 implemented customer workflows, and Stage 6 implemented the administrator module. The tree remains a design map; a planned helper is not implemented unless explicitly listed below.
 
 Companion documents: [ARCHITECTURE.md](ARCHITECTURE.md), [DATABASE_DESIGN.md](DATABASE_DESIGN.md), [WORKFLOWS.md](WORKFLOWS.md), [ASSUMPTIONS.md](ASSUMPTIONS.md), [TEST_PLAN.md](TEST_PLAN.md).
 
@@ -156,9 +156,13 @@ Notes:
 | `claim.php` | **Implemented in Stage 5:** manual-first code claim, optional QR-fragment prefill | `ClaimService` |
 | `history.php` | **Implemented in Stage 5:** ledger-derived points history | `LedgerService` |
 | `rewards.php`, `redeem.php`, `redemptions.php` | **Implemented in Stage 5:** browse active rewards, confirm one-unit requests and track status | `RewardService`, `RedemptionService` |
-| `admin/index.php` | Minimal protected admin placeholder only; admin management is not implemented | `AuthMiddleware` |
-| Other `admin/*.php` | Planned admin screens; not implemented in Stage 5 | Matching future admin-side services |
-| `admin/batch_generate_export.php` | POST-only generate and download (WORKFLOWS 2.3, 2.4) | `BatchService`, `CodeGeneratorService`, `ExportService` |
+| `admin/index.php` | **Implemented in Stage 6:** database-backed administrator dashboard | `AdminService` |
+| `admin/products.php`, `product_edit.php` | **Implemented in Stage 6:** product list, create, edit and activate/deactivate | `ProductService` |
+| `admin/batches.php`, `batch_create.php`, `batch_view.php` | **Implemented in Stage 6:** batch labels, lifecycle transitions and voiding | `BatchService` |
+| `admin/batch_generate_export.php` | **Implemented in Stage 6:** POST-only, re-authenticated, one-time in-memory code/CSV generation | `BatchService` |
+| `admin/customers.php`, `customer_view.php` | **Implemented in Stage 6:** customer search/detail, ledger/history and reasoned status changes | `AdminService`, `AccountLifecycleService` |
+| `admin/rewards.php`, `redemptions.php` | **Implemented in Stage 6:** reward management and pending fulfil/cancel workflow | `RewardService`, `RedemptionService` |
+| `admin/fraud.php`, `audit.php`, `reports.php`, `reconciliation.php` | **Implemented in Stage 6:** fraud review, read-only audit, reports and manual reconciliation | `AdminService`, `ReconciliationService` |
 
 ### 4.2 Bootstrap
 
@@ -182,7 +186,7 @@ Notes:
 
 | File | Purpose |
 |---|---|
-| `bin/create_admin.php` | Creates the initial factory-owner administrator and, when deliberately invoked by the operator, any additional administrator accounts. There is no web admin-creation screen. Bootstrap creation has a NULL actor; later creations are audited with the invoking operator. [Assumptions A-07/A-16] |
+| `bin/create_admin.php` | **Implemented in Stage 6:** creates the first administrator through a controlled CLI-only flow and writes an audit event in the same transaction. No web admin creation or hierarchy. [A-07/A-16] |
 | `bin/register_hmac_key.php` | **Implemented in Stage 5:** one-time initial active-key registry setup; never prints/stores the secret. Does not rotate keys. |
 | `bin/key_check.php` | Planned full key/configuration report; not implemented. |
 | `bin/key_rotate.php` | Operator-only helper for the rotation sequence in WORKFLOWS 6.7; reads secrets from protected configuration and never prints or logs them. |
@@ -300,6 +304,14 @@ Implemented customer routes: `register.php`, `login.php`, `logout.php`, `dashboa
 
 Not implemented by Stage 5: customer profile editing, first-admin creation, product/batch management, code generation/CSV export, full admin dashboard, fulfilment and cancellation, fraud review, audit/reporting/reconciliation or automated retention. See README and AI_LOG for environment limits.
 
-## 12. What this document does not do
+## 12. Stage 6 implementation status
 
-It does not create folders or files, write PHP, produce SQL, install Composer or any package, or begin Stage 3.
+Implemented administrator pages: `public/admin/index.php`, `products.php`, `product_edit.php`, `batches.php`, `batch_create.php`, `batch_view.php`, `batch_generate_export.php`, `customers.php`, `customer_view.php`, `rewards.php`, `redemptions.php`, `fraud.php`, `audit.php`, `reports.php` and `reconciliation.php`. They use `bootstrap/admin.php` and the existing `AuthMiddleware::requireAdmin()` guard. Shared admin layout and responsive styles are in `templates/admin/_layout.php` and `public/assets/css/admin.css`.
+
+Stage 6 services/repositories cover products, batches and code generation/export, customer account lifecycle, rewards/redemptions, dashboard/report queries, fraud review, audit read access and reconciliation. The database schema was not changed. `bin/create_admin.php` is the only initial administrator-creation path. Static Stage 6 checks are in `bin/test_stage6.php`; live database integration remains pending until tested against MySQL/MariaDB on the student's XAMPP/Ubuntu environment.
+
+Not added: web-based administrator creation or role hierarchy, HMAC key rotation UI, individual-code recall selection UI, arbitrary points editing, physical packaging integration or automatic reconciliation repair. These remain excluded or operator-controlled in the approved design.
+
+## 13. What this document does not do
+
+This document describes the project layout and implementation status; it is not a substitute for executing the local database, browser and concurrency test plan.

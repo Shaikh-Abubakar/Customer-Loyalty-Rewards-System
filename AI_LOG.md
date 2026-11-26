@@ -45,3 +45,16 @@ The cross-document schema timing mismatch above is a second documented issue det
 4. Purchase verification remains possession of the concealed code, per A-24/A-25; there is no independent retailer receipt or POS check.
 5. A source review found several repository SQL statements written as single-quoted PHP strings with a literal `\n` sequence. PHP would pass the backslash and `n` to the SQL parser rather than a line break. Those statements were converted to double-quoted PHP strings so the SQL receives real whitespace. A source-level regression check was added to `bin/test_stage5.php`.
 6. Student review, own-machine tests and earlier Stage 1–3 AI interaction entries remain to be completed. Do not present build-container checks as student-run XAMPP results.
+
+
+## Stage 6 — administrator dashboard and management (2026-11-25)
+
+| Item | Detail |
+|---|---|
+| User direction | Implement the administrator dashboard and management module using the approved architecture, database design, workflows and UI/UX documents; preserve the existing Stage 5 customer flows and PHP/MySQL-only stack. |
+| Source material inspected | Stage 5 ZIP (including Stage 4 foundation); original Assignment 2 requirements as previously retrieved; `ARCHITECTURE.md`, `DATABASE_DESIGN.md`, `WORKFLOWS.md`, `UI_UX_SPEC.md`, `DESIGN_SYSTEM.md`, `ASSUMPTIONS.md`, `PROJECT_STRUCTURE.md`, `TEST_PLAN.md`, existing repositories/services, schema and PHP pages. The ZIP had no `.git` directory. |
+| Scope implemented | Server-side administrator guard and CLI-only initial admin creation; live dashboard; product CRUD lifecycle without deletion; batch lifecycle and one-time HMAC code/CSV generation; customer search/detail and reasoned suspension/reactivation; reward management; pending redemption fulfilment/cancellation; fraud review; read-only audit; reports; manual reconciliation; responsive admin navigation/styles. Existing database schema was not changed. |
+| Corrections found during cross-document review | (1) The first batch form generated an internal label automatically, but WORKFLOWS 2.2 and UI_UX_SPEC require an administrator-entered label; changed it to a required unique 1–30 character label. (2) Nullable ownership fields could make SQL inequality tests evaluate UNKNOWN during reconciliation; added explicit NULL checks. (3) An export failure during the generated state could be recorded before the batch became exported, while the details page only warned for exported/failed; expanded the warning to both generated/failed and exported/failed. (4) Re-authentication now uses the existing login-attempt throttle; export validates the registered HMAC algorithm. |
+| Verification in the AI build container | Final build-container verification on 2026-11-25: `php -l` passed for 84 PHP files; `php bin/test_foundation.php` passed 20/20; `php bin/test_stage5.php` passed 26/26; `php bin/test_stage6.php` passed 41/41. `php bin/test_database.php` was blocked because PDO MySQL (`pdo_mysql`) is not installed. No MySQL/MariaDB, XAMPP, browser or concurrency results are claimed. |
+| Student review | Student must inspect the generated code, understand each service/transaction/guard, import the schema in local XAMPP, run Stage 6 test scenarios AD-01 to AD-16 and record genuine results. No student-run results are asserted here. |
+

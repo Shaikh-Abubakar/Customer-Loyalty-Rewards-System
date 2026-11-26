@@ -19,6 +19,7 @@ $flashNotice = Flash::consume();
     <title><?= e($pageTitle) ?> | <?= e($appName) ?></title>
     <link rel="stylesheet" href="<?= e(url('/assets/css/base.css')) ?>">
     <link rel="stylesheet" href="<?= e(url('/assets/css/customer.css')) ?>">
+    <?php if ($headerRole === 'admin'): ?><link rel="stylesheet" href="<?= e(url('/assets/css/admin.css')) ?>"><?php endif; ?>
 </head>
 <body>
 <a class="skip-link" href="#main-content">Skip to content</a>

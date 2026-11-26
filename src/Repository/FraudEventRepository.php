@@ -34,6 +34,13 @@ final class FraudEventRepository
         return $statement->fetchColumn() !== false;
     }
 
+    public function review(int $eventId,string $status,string $note,int $adminId): bool
+    {
+        $stmt=$this->pdo->prepare("UPDATE fraud_events SET review_status=:status,reviewed_by_user_id=:admin,reviewed_at=UTC_TIMESTAMP(),review_note=:note WHERE id=:id AND review_status='open'");
+        $stmt->execute(['status'=>$status,'admin'=>$adminId,'note'=>$note,'id'=>$eventId]);
+        return $stmt->rowCount()===1;
+    }
+
     public function record(
         string $eventType,
         string $severity,

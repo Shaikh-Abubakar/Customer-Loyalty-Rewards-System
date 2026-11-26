@@ -35,6 +35,40 @@ final class PointsLedgerRepository
         ]);
     }
 
+    public function findEntry(int $entryId): ?array
+    {
+        $statement = $this->pdo->prepare('SELECT id,user_id,entry_type,points_delta,reverses_entry_id FROM points_ledger WHERE id=:id LIMIT 1');
+        $statement->execute(['id' => $entryId]);
+        $row = $statement->fetch();
+        return is_array($row) ? $row : null;
+    }
+
+    public function findRedemptionDebit(int $redemptionId): ?array
+    {
+        $statement = $this->pdo->prepare("SELECT id,user_id,points_delta FROM points_ledger WHERE redemption_id=:id AND entry_type='redemption' LIMIT 1");
+        $statement->execute(['id' => $redemptionId]);
+        $row = $statement->fetch();
+        return is_array($row) ? $row : null;
+    }
+
+    public function insertAdjustment(int $userId, int $delta, string $key, string $reason, int $adminId): void
+    {
+        $statement = $this->pdo->prepare(
+            "INSERT INTO points_ledger (user_id,entry_type,points_delta,idempotency_key,reason,created_by_user_id,created_at)
+             VALUES (:user_id,'adjustment',:delta,:idem,:reason,:admin,UTC_TIMESTAMP())"
+        );
+        $statement->execute(['user_id'=>$userId,'delta'=>$delta,'idem'=>$key,'reason'=>$reason,'admin'=>$adminId]);
+    }
+
+    public function insertReversal(int $userId, int $originalId, int $delta, string $key, string $reason, int $adminId): void
+    {
+        $statement = $this->pdo->prepare(
+            "INSERT INTO points_ledger (user_id,entry_type,points_delta,reverses_entry_id,idempotency_key,reason,created_by_user_id,created_at)
+             VALUES (:user_id,'reversal',:delta,:original,:idem,:reason,:admin,UTC_TIMESTAMP())"
+        );
+        $statement->execute(['user_id'=>$userId,'delta'=>$delta,'original'=>$originalId,'idem'=>$key,'reason'=>$reason,'admin'=>$adminId]);
+    }
+
     public function balance(int $userId): int
     {
         $statement = $this->pdo->prepare(

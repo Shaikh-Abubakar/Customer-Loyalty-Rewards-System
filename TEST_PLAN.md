@@ -405,3 +405,52 @@ Before any test is run:
 - Before final assignment submission, execute the test plan and fill section 7 with actual results and environment details.
 
 Only the listed build-container syntax, foundation and database-independent checks have been executed. The full plan has not been executed; it does not claim that database-backed behavior works until local SQL and browser tests pass.
+
+## 9. Stage 6 administrator-module checks
+
+### 9.1 Build-container regression checks
+
+**Run on 2026-11-25 in the build container; not on XAMPP.**
+
+| Check | Result | Notes |
+|---|---|---|
+| `php bin/test_foundation.php` | PASS — 20/20 | Shared configuration/session/helper checks. |
+| `php bin/test_stage5.php` | PASS — 26/26 | Customer code/HMAC/password and SQL-string regression checks. |
+| `php bin/test_stage6.php` | PASS — 41/41 | Static admin authorization, CSRF, batch/export, ledger, fraud/audit and reconciliation contracts. |
+| `php -l` over all project PHP files | PASS — 84 files | No PHP syntax errors. |
+| `php bin/test_database.php` | BLOCKED | PHP CLI has PDO but not `pdo_mysql`; no MySQL/MariaDB integration test ran. |
+
+Run these commands from the repository root:
+
+```bash
+php bin/test_foundation.php
+php bin/test_stage5.php
+php bin/test_stage6.php
+find . -name '*.php' -print0 | xargs -0 -n1 php -l
+php bin/test_database.php
+```
+
+`bin/test_stage6.php` contains database-independent source-level checks for the administrator guard on every admin route, POST/CSRF protections, CLI-only administrator creation, product deactivation (not deletion), batch label/lifecycle and code-generation safeguards, one-time export/re-authentication, ledger immutability, transactional redemption handling, exact account-status reason categories, fraud review states, audit read-only behavior and reconciliation without automatic repair. These checks inspect source contracts; they do not execute SQL transactions or emulate concurrent requests.
+
+### 9.2 Required local database/browser checks (not yet run by the build container)
+
+| ID | Required scenario | Expected result |
+|---|---|---|
+| AD-01 | Unauthenticated user opens every `/admin/` route | Redirect to sign-in; no page data exposed |
+| AD-02 | Active customer opens an admin route | HTTP 403; no admin data exposed |
+| AD-03 | Suspended admin uses an existing session | Session reset and sign-in required |
+| AD-04 | Create/edit/deactivate product with duplicate SKU and boundary point values | Server validation; audit event; no delete path |
+| AD-05 | Create batch with duplicate label, inactive product, quantity 0/1001 and points 0/10001 | Invalid request rejected; valid batch is draft and copies points |
+| AD-06 | Generate codes with missing/mismatched/multiple active HMAC keys | Generation stops without inserting codes or plaintext |
+| AD-07 | Generate/export one batch, then resubmit the same request or use two concurrent requests | Exactly one export; no plaintext stored; second request refused |
+| AD-08 | Fail CSV construction, response delivery or DB Commit B | No second export is allowed; batch can be voided and replaced |
+| AD-09 | CSV contents | Six approved columns; codes are grouped 4-4-4-4; no HMAC or formula-injection fields; response is no-store |
+| AD-10 | Suspend/reactivate customer with missing/invalid reason or simultaneous request | Exact A-30 category, audit and account-status history in one transaction |
+| AD-11 | Customer attempts to edit their balance or admin attempts to overwrite a historical ledger row | No customer balance editor or ledger row mutation; a justified claim/adjustment correction is a new audited entry, while a redemption refund must use pending-redemption cancellation |
+| AD-12 | Restock, fulfil or cancel concurrently | Stock never becomes negative; only pending redemptions processed; cancellation restores one unit and appends exact reversal |
+| AD-13 | Review fraud event with invalid state or no note | Rejected; valid reviewed/dismissed/escalated state and audit saved |
+| AD-14 | Read audit history | Filterable read-only view; no update/delete operation |
+| AD-15 | Run each manual reconciliation scope with clean and corrupted test fixtures | Findings are recorded; no auto-correction or ledger mutation |
+| AD-16 | Dashboard, reports and all empty states | Counts and summaries come from database; no hardcoded demo records |
+
+The above local checks must be completed on the student's XAMPP or Ubuntu MySQL/MariaDB setup before marking the administrator module integration-tested.

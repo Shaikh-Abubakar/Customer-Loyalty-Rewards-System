@@ -2,7 +2,7 @@
 
 A PHP 8 and MySQL/MariaDB college project for a factory loyalty programme. Customers register, sign in, claim one-time concealed product-box codes, earn points, browse rewards and submit redemption requests. The points ledger is the source of truth for every balance.
 
-**Implemented through Stage 5:** customer registration, login/logout, authenticated dashboard, manual product-code claiming, points history, rewards catalogue, one-unit redemption requests and customer redemption tracking. The administrator product/batch/code-generation, fulfilment, monitoring and reporting modules remain later-stage work.
+**Implemented through Stage 6:** customer registration, login/logout, authenticated dashboard, manual product-code claiming, points history, rewards catalogue and redemption tracking; plus the administrator dashboard, product and reward management, batch/code generation and one-time CSV export, customer support actions, redemption processing, fraud review, audit browser, reports and manual reconciliation.
 
 ## Technology
 
@@ -121,11 +121,46 @@ The code avoids Windows-specific absolute paths. The provided build container di
 - A redemption confirmation displays cost, current balance and projected balance. Confirmation is a CSRF-protected POST with a one-time idempotency token.
 - The transaction locks the customer and reward, reserves one stock unit, creates a pending redemption and appends the negative ledger debit atomically. Repeated submission with the same token returns the existing request. Customers cannot cancel their own requests.
 
-## 6. Demo-data and remaining modules
+## 6. Stage 6 administrator module
 
-The schema imports empty tables. The Stage 5 customer pages display genuine database values and meaningful empty states; they do not fabricate demo customers, product codes, points or rewards.
+The administrator module uses the same normal sign-in page as customers. A successful administrator login is redirected to `/admin/index.php`; every administrator page independently loads `bootstrap/admin.php`, which checks the current database role and active account status on the server. There is one administrator permission tier. There is no web-based administrator registration or role-management screen.
 
-The Stage 5 scope does not yet include administrator screens or a code-generation/export tool. Therefore, a full claim demo requires a code/batch created by the later approved admin-generation stage (or controlled synthetic fixture records that obey the HMAC and foreign-key rules). Rewards can be added by the later admin module or a controlled demo seed. Use synthetic records described in `DEMO_DATA_GUIDE.md`; never commit actual product codes, HMAC keys or export CSVs.
+### Create the first administrator (CLI only)
+
+Create the initial factory-owner account from the project root after `.env`, the database and the schema are ready:
+
+- **Linux/Ubuntu:** run `php bin/create_admin.php`; enter the email and type the password at the hidden prompt.
+- **Windows PowerShell:** securely set the temporary environment variable before running the CLI script, then remove it:
+
+```powershell
+$secure = Read-Host "Initial administrator password" -AsSecureString
+$ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+try {
+    $env:ADMIN_INITIAL_PASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr)
+    php bin/create_admin.php
+} finally {
+    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
+    Remove-Item Env:ADMIN_INITIAL_PASSWORD -ErrorAction SilentlyContinue
+}
+```
+
+The script asks for the email, hashes the password, creates the admin and its audit event in one transaction, and never prints the password. Do not create administrator rows manually in the browser or expose the CLI script through Apache.
+
+### Administrator pages
+
+- **Dashboard:** database-derived customer, product, code, points, reward, pending redemption, fraud and recent-activity summaries.
+- **Products:** create, edit, view and activate/deactivate products. Products are not deleted; existing batches retain their copied points-per-code value.
+- **Batches:** create a draft batch with a unique human-readable label, active product, 1–1,000 code quantity and optional points override. The lifecycle is `draft → generated → exported → printed → active`; `voided` is final. Generation uses the approved 16-character alphabet, cryptographically secure uniform `random_int()` selection, HMAC-SHA-256 and the configured active/retained key registry.
+- **One-time export:** a POST + CSRF action requires administrator password re-entry and the configured login-attempt throttle. CSV is assembled in `php://memory`, contains codes in four-character groups and claim URLs using URL fragments, and is never saved to disk or made available for a second download. If export or delivery fails, void the batch and create a replacement; do not retry the same batch.
+- **Customers:** search and read-only profile detail, ledger-derived points balance, claim/ledger activity, redemption history, account status history, and reasoned suspend/reactivate actions. Any support points correction is a separate audited ledger adjustment/reversal; there is no direct balance editor.
+- **Rewards and redemptions:** reward creation/editing/activation/restocking and pending redemption fulfilment/cancellation. Cancellation appends a compensating ledger entry and restores one stock unit in the same transaction; historical ledger rows are not edited.
+- **Fraud, audit, reports and reconciliation:** review fraud signals, read the append-only audit trail, view claim/points/redemption reports, and run manual discrepancy checks. Reconciliation records findings; it never repairs data automatically.
+
+The admin UI does not provide HMAC key rotation, partial code recall selection, administrator hierarchy or web-based administrator creation. Key operations remain controlled CLI/operator procedures as specified in the approved architecture.
+
+### Demo and deployment limitations
+
+The schema imports empty tables. The Stage 5 customer pages and Stage 6 administrator pages display database-backed information and empty states, not fabricated demo records. After provisioning the HMAC key and first administrator, create a product/reward, create and export a draft batch, mark it printed and activate it before demonstrating customer claims. Use only synthetic demonstration products and codes. Never commit export CSVs or actual secrets.
 
 **Purchase-proof limitation:** possession of a valid concealed one-time code is the selected operational purchase credential. The system does not independently verify a retailer receipt or point-of-sale transaction (A-24/A-25).
 
@@ -138,22 +173,25 @@ php -v
 php -m
 php bin/test_foundation.php
 php bin/test_stage5.php
+php bin/test_stage6.php
 php bin/test_database.php
 ```
 
 - `test_foundation.php`: 20 shared configuration/session/helper checks.
 - `test_stage5.php`: 26 database-independent checks for code normalization/alphabet, HMAC key and digest handling, password hashing, UTF-8 character counting and a source-level SQL-string regression guard.
+- `test_stage6.php`: 41 database-independent source-level checks for administrator guards, CSRF-protected state changes, batch/HMAC/export rules, append-only ledger boundaries, fraud review, audit and reconciliation behavior.
 - `test_database.php`: real PDO MySQL connection test; it needs `pdo_mysql` and a running database.
+- Build-container results on 2026-11-25: foundation 20/20, Stage 5 26/26, Stage 6 41/41, and PHP syntax clean for all 84 PHP files. `php bin/test_database.php` is blocked because `pdo_mysql` is absent in this runtime. These are static/build-container checks, not XAMPP or MySQL integration tests.
 - Run the full browser, SQL, concurrency, rate-limit and CSRF test plan in `TEST_PLAN.md` on your own XAMPP or Ubuntu installation. Do not mark tests as passed until they are run there. Record actual versions and results.
 
 ## Security notes
 
 - `.env`, passwords, database credentials, HMAC secrets, plaintext product codes and export files never belong in Git.
-- Customer pages use server-side authentication, role/status checks, CSRF for state changes, prepared statements, escaped output and private no-store responses.
-- Claim and redemption state changes use transactions; the points ledger is append-only and is the sole source of balance.
+- Customer and administrator pages use server-side authentication and role/status checks, CSRF for state changes, prepared statements, escaped output and private no-store responses.
+- Claim, redemption, account lifecycle, product/reward administration and batch lifecycle changes use transactions where multiple records must remain consistent; the points ledger is append-only and is the sole source of balance.
 - Database timestamps are stored in UTC; PDO sets UTC and strict SQL mode.
-- The first administrator and all admin workflows are not part of Stage 5; there is no public admin registration.
+- The first administrator is created only through `bin/create_admin.php`; every admin route applies `AuthMiddleware::requireAdmin()`. There is no public admin registration or administrator role hierarchy.
 
 ## Assignment and Git submission
 
-The assignment requires meaningful incremental commits, a 5–10 interaction AI log with at least two genuine AI errors/corrections, test evidence and a public repository. The supplied Stage 4 ZIP does not contain `.git` metadata, so no commit history could be inspected or created here. Apply the Stage 5 files to your own Git working tree, inspect the changes, then commit the stage as a separate milestone. Add your actual earlier prompts and student-run test evidence to `AI_LOG.md`/`TEST_PLAN.md`; do not claim that sandbox checks are XAMPP tests.
+The assignment requires meaningful incremental commits, a 5–10 interaction AI log with at least two genuine AI errors/corrections, test evidence and a public repository. The supplied Stage 4 ZIP does not contain `.git` metadata, so no commit history could be inspected or created here. Apply the Stage 5 and Stage 6 files to your own Git working tree, inspect the changes, then commit each stage as a separate milestone. Add your actual earlier prompts and student-run test evidence to `AI_LOG.md`/`TEST_PLAN.md`; do not claim that sandbox checks are XAMPP tests.

@@ -57,6 +57,38 @@ final class UserRepository
         return is_array($row) ? $row : null;
     }
 
+    public function findCredentials(int $userId): ?array
+    {
+        $statement = $this->pdo->prepare('SELECT id,email,password_hash,role,status FROM users WHERE id=:id LIMIT 1');
+        $statement->execute(['id' => $userId]);
+        $row = $statement->fetch();
+        return is_array($row) ? $row : null;
+    }
+
+    public function lockCustomerRow(int $userId): ?array
+    {
+        $statement = $this->pdo->prepare("SELECT id,status FROM users WHERE id=:id AND role='customer' FOR UPDATE");
+        $statement->execute(['id' => $userId]);
+        $row = $statement->fetch();
+        return is_array($row) ? $row : null;
+    }
+
+    public function changeCustomerStatus(int $userId, string $status): void
+    {
+        $statement = $this->pdo->prepare("UPDATE users SET status=:status,updated_at=UTC_TIMESTAMP() WHERE id=:id AND role='customer'");
+        $statement->execute(['status' => $status, 'id' => $userId]);
+    }
+
+    public function createAdmin(string $email, string $passwordHash): int
+    {
+        $statement = $this->pdo->prepare(
+            "INSERT INTO users (email,password_hash,role,status,created_at,updated_at)
+             VALUES (:email,:hash,'admin','active',UTC_TIMESTAMP(),UTC_TIMESTAMP())"
+        );
+        $statement->execute(['email' => $email, 'hash' => $passwordHash]);
+        return (int) $this->pdo->lastInsertId();
+    }
+
     public function updateLastLogin(int $userId): void
     {
         $statement = $this->pdo->prepare(
