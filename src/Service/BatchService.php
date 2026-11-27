@@ -155,7 +155,7 @@ final class BatchService
                 $collision=false;
                 foreach ($usableKeys as $keyId=>$secret) {
                     $digest=Hmac::codeHash($candidate,$secret);
-                    if ($this->codes->existsHash($digest,(int)$keyId)) { $collision=true; break; }
+                    if ($this->codes->existsHash($digest)) { $collision=true; break; }
                     $candidateHashes[(int)$keyId]=$digest;
                 }
                 if ($collision) { continue; }

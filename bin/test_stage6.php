@@ -62,7 +62,12 @@ $check('Batch quantity is limited to 1–1,000', str_contains($batchService, '$q
 $check('Batch points per code are limited to 1–10,000', str_contains($batchService, '$pointsOverride<1 || $pointsOverride>10000'));
 $check('Code generation uses the approved 30-character alphabet and random_int', str_contains($batchService, "'23456789ABCDEFGHJKMNPQRSTVWXYZ'") && str_contains($batchService, 'random_int(0,$last)'));
 $check('Code hashes use HMAC and validate the registry algorithm', str_contains($batchService, 'Hmac::codeHash(') && str_contains($batchService, "'HMAC-SHA256'"));
-$check('Code generation checks duplicates under each usable key', str_contains($batchService, '$this->codes->existsHash($digest,(int)$keyId)'));
+$codeGenerationRepository = $read('src/Repository/CodeGenerationRepository.php');
+$check('Code generation checks digest collisions across the global code_hash unique index',
+    str_contains($batchService, 'foreach ($usableKeys as $keyId=>$secret)')
+    && str_contains($batchService, '$this->codes->existsHash($digest)')
+    && str_contains($codeGenerationRepository, 'WHERE code_hash=:hash LIMIT 1')
+    && !str_contains($codeGenerationRepository, 'key_id=:key_id'));
 $check('CSV uses a memory stream and approved columns', str_contains($batchService, "fopen('php://memory'") && str_contains($batchService, "['batch_code','row_number','product_sku','points','code','claim_url']"));
 $check('CSV groups each plaintext code into four-character chunks', str_contains($batchService, 'implode(\'-\',str_split($code,4))'));
 $check('Export requires password verification and shared login-attempt throttling', str_contains($batchService, 'password_verify(') && str_contains($batchService, 'countFailuresByIp(') && str_contains($batchService, 'countFailuresByUser('));

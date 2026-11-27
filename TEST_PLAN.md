@@ -1,6 +1,6 @@
 # TEST_PLAN.md: Customer Loyalty Rewards System
 
-Stage 2 design document. **This is a plan. No test has been run, no result is recorded, and no environment information has been invented.** Every test below has the status **Not run**.
+Stage 2 design document and evolving test record. Planned scenarios remain unexecuted unless a dated result is recorded in section 7 or the Stage 8 record in section 10. A source-level check is not evidence of a live database or browser workflow.
 
 Companion documents: [ARCHITECTURE.md](ARCHITECTURE.md), [DATABASE_DESIGN.md](DATABASE_DESIGN.md), [WORKFLOWS.md](WORKFLOWS.md), [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md), [ASSUMPTIONS.md](ASSUMPTIONS.md).
 
@@ -47,14 +47,14 @@ ARCHITECTURE 8.2 and 13.8 require PHPUnit, Composer and any QR library to be cho
 
 | Check | Information needed | Result |
 |---|---|---|
-| PHP version used by the **command line** (XAMPP) | `php -v` | **Pending** |
-| PHP version used by **Apache** | A page showing the web-context version, or `phpinfo` in a protected local file | **Pending** |
-| `pdo_mysql` extension present in both contexts | `php -m` and the web context | **Pending** |
+| PHP version used by the **command line** (XAMPP) | `php -v` | **Build container: PHP 8.4.24; XAMPP remains pending** |
+| PHP version used by **Apache** | A page showing the web-context version, or `phpinfo` in a protected local file | **Not available in this run; Apache/XAMPP not present** |
+| `pdo_mysql` extension present in both contexts | `php -m` and the web context | **Build-container CLI: absent; Apache context not available** |
 | Other extensions that a chosen PHPUnit release requires | PHPUnit's published requirements for the chosen release | **Pending** |
-| Composer present and version | `composer --version` | **Pending** |
-| MySQL/MariaDB server version | Server version query | **Pending** |
-| Which PHPUnit release is compatible | Match the PHP version above against PHPUnit's own published support table at that time | **Pending** (no release is named here on purpose) |
-| Optional QR library compatibility | PHP version vs the library's declared requirement (ARCH 8.1: neither candidate has been tested) | **Pending** |
+| Composer present and version | `composer --version` | **Not installed in the build container** |
+| MySQL/MariaDB server version | Server version query | **Not available; no server/client available in the build container** |
+| Which PHPUnit release is compatible | Match the PHP version above against PHPUnit's own published support table at that time | **Not selected; no Composer/PHPUnit setup in this project environment** |
+| Optional QR library compatibility | PHP version vs the library's declared requirement (ARCH 8.1: neither candidate has been tested) | **Not tested; optional QR library not installed** |
 
 **Decision rule** [Confirmed, decision 2]: use PHPUnit only if a release compatible with the installed PHP is found. If not, run the same tests manually from this plan; the plan is written to work either way. PHPUnit would be a development dependency only. [ARCH 13.8]
 
@@ -113,6 +113,7 @@ Each row: **ID | what to do | expected result | type**. All status: Not run.
 | FN-26 | Configure a reward cost below 1 or above 1,000,000 | Rejected; valid costs within the range save and display correctly (A-34) | M, A |
 | FN-27 | Cancel a customer closure request within the 30-day recovery window after identity checks | Account returns to `active`; profile identifiers and all ledger/reward history remain unchanged (A-17) | M, A |
 | FN-28 | Attempt to reverse a closure after the 30-day recovery window and anonymisation | Rejected; non-routable email/name placeholders and cleared contact fields remain; historical references are intact (A-17) | M, A |
+| FN-29 | Customer updates their own profile name and optional contact details | Updated values are validated, saved to the customer's own profile only, and displayed after reload; another customer's profile cannot be changed | M, A |
 
 ### 4.2 Authentication and session tests (AU)
 
@@ -381,7 +382,7 @@ No special tools are assumed. [Unresolved: choose tools after Q-01]
 
 ---
 
-## 7. Result log (Stage 5 build-container checks recorded; local integration still pending)
+## 7. Result log (build-container checks recorded; local integration still pending)
 
 | Test ID | Date run | Environment (XAMPP / Ubuntu, PHP and DB versions) | Result | Evidence or notes |
 |---|---|---|---|---|
@@ -476,3 +477,58 @@ The Stage 7 source-level regression script is `php bin/test_stage7.php`. On 2026
 | S7-08 | Request project-root files directly through Apache | Denied; Apache DocumentRoot is `public/` and directory indexes are disabled | M |
 | S7-09 | Send an untrusted `X-Forwarded-For` header from a direct client | Application continues to use `REMOTE_ADDR` only | M |
 | S7-10 | Open a QR-fragment claim URL | Manual code field may be prefilled; no automatic POST or session persistence of the code occurs | M |
+
+
+## 10. Stage 8 — complete-system test and regression record
+
+**Run date:** 2026-11-26  
+**Environment:** supplied Linux build container; PHP CLI 8.4.24. A PHP built-in web server was used only for HTTP smoke checks. This was **not** an XAMPP or Apache test and is not recorded as an Ubuntu deployment test.  
+**Database setup:** the supplied `.env` contains example placeholders; PDO is present but `PDO::getAvailableDrivers()` returns no drivers, `pdo_mysql` is absent, and no MySQL/MariaDB server or client is available. Composer and PHPUnit are not installed/configured. No database was connected, created, imported, backed up, or modified. No real customer data or production key was used.
+
+### 10.1 Tests actually executed
+
+| Test ID | Test description | Actual result | Status | Bug found / fix applied |
+|---|---|---|---|---|
+| ST8-01 | Run `php bin/test_foundation.php` | 20 checks, 0 failures | **PASS** | None |
+| ST8-02 | Run `php bin/test_stage5.php` | 26 checks, 0 failures | **PASS** | None |
+| ST8-03 | Run `php bin/test_stage6.php` after the Stage 8 code-generation fix | 41 checks, 0 failures, including the global cross-key digest lookup assertion | **PASS** | Confirms the source-level regression guard; it does not execute the SQL against MySQL |
+| ST8-04 | Run `php bin/test_stage7.php` | 68 checks, 0 failures | **PASS** | None |
+| ST8-05 | Run `php -l` on every PHP file outside `.git/` | All 88 PHP files reported no syntax errors | **PASS** | None |
+| ST8-06 | HTTP GET `/` through PHP built-in server | HTTP 200; public landing page returned | **PASS** | Smoke test only; no database-backed workflow |
+| ST8-07 | HTTP GET `/assets/css/base.css` through PHP built-in server | HTTP 200; CSS content returned | **PASS** | Smoke test only |
+| ST8-08 | HTTP GET `/register.php` through PHP built-in server | HTTP 500 generic error page because application database is unavailable; registration was not exercised | **BLOCKED** | Environment blocker, not treated as a passing registration test |
+| ST8-09 | Run `php bin/test_database.php` | Exited with failure: `pdo_mysql` is not enabled | **BLOCKED** | Requires PDO MySQL driver and a separate configured test database |
+| ST8-10 | Inspect code-generation collision lookup against schema uniqueness rule | Found lookup filtered by `key_id`, while `uq_codes_code_hash` is globally unique on `code_hash` | **BUG FIXED; SOURCE CHECK PASS** | Updated repository lookup and generator call to check `code_hash` across all key versions; updated Stage 6 regression assertion |
+| ST8-11 | Inspect customer profile editing implementation | No profile edit route, service update method, or repository update method exists | **NOT IMPLEMENTED** | No feature added during Stage 8; FN-29 remains open |
+| ST8-12 | Inspect account closure and anonymisation implementation | Current account lifecycle service supports suspend/reactivate only; no close-request or anonymisation write path exists | **NOT IMPLEMENTED** | No feature added during Stage 8; FN-19, FN-27 and FN-28 remain open |
+| ST8-13 | Inspect selective code voiding implementation | Current batch service supports whole-batch voiding; no selected-code void operation or administrator interface exists | **NOT IMPLEMENTED** | No feature added during Stage 8; FN-20 remains open |
+
+The 155 checks are the total of the four executed project suites (20 + 26 + 41 + 68). They are primarily CLI and source-contract checks; they do not prove live SQL behavior, actual browser session flows, Apache access controls or concurrent database behavior.
+
+### 10.2 Confirmed bug and correction
+
+**CG-16 — cross-key code-hash collision lookup.** The `codes` table defines a global unique index on `code_hash`, but `CodeGenerationRepository::existsHash()` also filtered on `key_id`. A digest collision against a row created under a different retained HMAC key would therefore be missed by the pre-insert check, leaving the database unique constraint to abort generation instead of rejecting that candidate and continuing safely.
+
+**Correction:** `existsHash()` now searches by `code_hash` alone. `BatchService` uses that global lookup for each candidate digest produced under each usable key. The Stage 6 source-level regression test now verifies that the query does not filter by key ID. The regression suite passed after the correction. A forced cross-key database collision test remains unexecuted because MySQL/PDO MySQL is unavailable here.
+
+### 10.3 Required tests not executed
+
+The following require a separate MySQL/MariaDB test database and/or a real web server/browser and therefore remain **Not run**, not passed:
+
+- Customer registration and duplicate-account handling, login/logout, protected routes, dashboard balance, valid/invalid/repeated claims, points history, rewards catalogue, sufficient/insufficient-point redemption, redemption history and profile updates.
+- Administrator login/authorization, dashboard database counts, product CRUD/deactivation, batch transitions, actual code generation, CSV export, customer suspension/reactivation, reward stock management, redemption fulfilment/cancellation, fraud review, audit history, reports and reconciliation.
+- SQL schema import, runtime database grants, append-only triggers, SQL injection against live queries, XSS browser payloads, CSRF requests, session expiry/rotation through HTTP, persistent rate-limit behavior, duplicate/concurrent claims, duplicate points awards, concurrent redemptions/stock reservation and CSV download failure handling.
+- The manual security scenarios in SC, S7 and the browser/database portions of AU, DC, CC, RS, AA, KR and CE.
+- Apache `.htaccess` protections, XAMPP PHP/Apache configuration and Ubuntu deployment behavior.
+
+### 10.4 Known incomplete features and remaining issues
+
+1. **Customer profile updates:** the profile is created at registration and can be read for the dashboard, but no customer edit page or update method is present. FN-29 is not implemented.
+2. **Account closure/anonymisation:** the documented closure and 30-day recovery/anonymisation lifecycle is not implemented. The existing reactivation code's closed-account branch has no corresponding close-request path in the supplied application. FN-19, FN-27 and FN-28 remain open.
+3. **Selective code voiding:** the application can void a whole batch, but cannot void a selected subset of unclaimed codes with a scope/count audit record. FN-20 remains open.
+4. **Database and browser integration:** all live customer/admin workflows remain unverified until a separate test database, `pdo_mysql`, and the student's Apache/XAMPP or intended Ubuntu environment are available.
+5. **PHPUnit:** no Composer manifest or PHPUnit installation is present. The existing CLI test scripts were used; no PHPUnit test was claimed.
+
+### 10.5 Final regression conclusion
+
+After the code-generation fix, all four existing CLI suites passed (155/155 total) and all 88 PHP files passed syntax checks. The landing page and base stylesheet passed basic HTTP smoke checks using PHP's built-in server. Database-backed workflows, Apache behavior and concurrency scenarios could not be repeated in this environment. Therefore, **the database-independent regression checks passed, but the complete system is not yet integration-tested or ready for a full Stage 8 sign-off**.

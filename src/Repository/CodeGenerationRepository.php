@@ -9,11 +9,13 @@ final class CodeGenerationRepository
 {
     public function __construct(private PDO $pdo) {}
 
-    public function existsHash(string $hash, int $keyId): bool
+    public function existsHash(string $hash): bool
     {
-        $stmt=$this->pdo->prepare('SELECT id FROM codes WHERE code_hash=:hash AND key_id=:key_id LIMIT 1');
+        // code_hash is globally unique in the schema, regardless of key_id.
+        // Check across all key versions so a cross-key collision is rejected
+        // before the generation transaction attempts an insert.
+        $stmt=$this->pdo->prepare('SELECT id FROM codes WHERE code_hash=:hash LIMIT 1');
         $stmt->bindValue(':hash',$hash,PDO::PARAM_LOB);
-        $stmt->bindValue(':key_id',$keyId,PDO::PARAM_INT);
         $stmt->execute();
         return $stmt->fetchColumn()!==false;
     }
