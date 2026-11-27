@@ -104,6 +104,15 @@ if (!function_exists('csrf_is_valid')) {
 if (!function_exists('require_csrf')) {
     function require_csrf(): void
     {
+        if (!request_method_is('POST')) {
+            if (!headers_sent()) {
+                http_response_code(405);
+                header('Allow: POST');
+                header('Content-Type: text/plain; charset=UTF-8');
+            }
+            echo 'Method not allowed.';
+            exit;
+        }
         $token = $_POST['_csrf'] ?? null;
         if (!is_string($token) || !csrf_is_valid($token)) {
             if (!headers_sent()) {

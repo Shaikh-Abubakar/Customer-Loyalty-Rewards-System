@@ -342,7 +342,7 @@ Each row: **ID | what to do | expected result | type**. All status: Not run.
 | SC-08 | Time handling | Stored times are UTC; display is correct | M |
 | SC-09 | File name case on Ubuntu | No missing-file errors from case differences | M |
 | SC-10 | `.env` permissions on Ubuntu | Not world-readable | M |
-| SC-11 | Run monthly retention maintenance with old/new attempt and log records | Only `login_attempts`/`claim_attempts` older than 90 days and technical logs older than 30 days are removed; `points_ledger` and `audit_logs` remain untouched; fraud/reconciliation rows are not auto-deleted; run outcome is logged (A-11) | M, D |
+| SC-11 | Run monthly retention maintenance with old/new attempt and log records | Only `login_attempts`/`claim_attempts`/`registration_attempts` older than 90 days and daily technical log files older than 30 days are removed; `points_ledger` and `audit_logs` remain untouched; fraud/reconciliation rows are not auto-deleted; run outcome is logged (A-11) | M, D |
 | SC-12 | Request two separate HTML responses containing an approved inline script; inspect each CSP header and rendered script element, then attempt an un-nonced inline script and an inline event handler | Each response has a different unpredictable nonce; its script nonce matches that response's `script-src` nonce; un-nonced script and inline handler are blocked; no `unsafe-inline` or `eval` exception is present (F-15) | M |
 | SC-13 | Open a QR link while logged out; inspect the redirect response and complete login | The `Location` contains the fixed `return=claim` token and an explicit empty fragment (`#`); the code is not inherited onto the login URL or returned claim URL; successful login returns to `claim.php` without the code; arbitrary return URLs are ignored; the customer must rescan or type (F-11/A-31) | M |
 
@@ -454,3 +454,25 @@ php bin/test_database.php
 | AD-16 | Dashboard, reports and all empty states | Counts and summaries come from database; no hardcoded demo records |
 
 The above local checks must be completed on the student's XAMPP or Ubuntu MySQL/MariaDB setup before marking the administrator module integration-tested.
+
+
+### 4.8 Stage 7 automated build-container checks
+
+The Stage 7 source-level regression script is `php bin/test_stage7.php`. On 2026-11-25 it passed **68/68 checks**. The complete database-independent suite passed **155/155 checks** across foundation (20), Stage 5 (26), Stage 6 (41) and Stage 7 (68). All **88 PHP files** passed `php -l`. These are source/CLI checks only; they do not exercise a live database, named-lock contention or Apache.
+
+`php bin/test_database.php` could not run because this build container has no `pdo_mysql` extension. Do not enter the database scenarios below as passed until they are completed on XAMPP or Ubuntu MySQL/MariaDB.
+
+### 4.9 Stage 7 security-hardening checks
+
+| ID | Test | Expected result | Type |
+|---|---|---|---|
+| S7-01 | Submit more than the configured registration limit from one IP | Later requests receive a generic try-later response; `rate_limited` rows do not increase the submitted count; a deduplicated warning fraud event is recorded | M |
+| S7-02 | Send simultaneous registration/login/claim requests from the same IP/account | Named-lock serialization prevents requests from passing a stale counter check concurrently | M, C |
+| S7-03 | Log in while the stored password hash is changed between lookup and row lock | The locked-row verification rejects the stale credential | M, C |
+| S7-04 | Submit password longer than 72 bytes | Login fails generically without bcrypt truncation ambiguity | M |
+| S7-05 | Cause a SQL exception containing password/token/code-shaped values in a controlled local test | Technical log masks secret values and both compact/grouped product codes; no raw form payload, password, session ID, CSRF token, plaintext code or HMAC key is written | M |
+| S7-06 | Attempt UPDATE and DELETE on `points_ledger` and `audit_logs` using the runtime DB account | Database denies both operations; runtime account has no UPDATE/DELETE grants on these tables | D |
+| S7-07 | Inspect `SHOW GRANTS` for runtime DB user | No root/global/schema-management privileges; table-level grants match `database/security_hardening.sql` | D |
+| S7-08 | Request project-root files directly through Apache | Denied; Apache DocumentRoot is `public/` and directory indexes are disabled | M |
+| S7-09 | Send an untrusted `X-Forwarded-For` header from a direct client | Application continues to use `REMOTE_ADDR` only | M |
+| S7-10 | Open a QR-fragment claim URL | Manual code field may be prefilled; no automatic POST or session persistence of the code occurs | M |

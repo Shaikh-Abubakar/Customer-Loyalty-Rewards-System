@@ -56,6 +56,13 @@ return [
         'user' => (string) Env::get('DB_USER', ''),
         'password' => (string) Env::get('DB_PASSWORD', ''),
     ],
+    'database_maintenance' => [
+        'host' => (string) Env::get('DB_MAINTENANCE_HOST', Env::get('DB_HOST', '127.0.0.1')),
+        'port' => (int) Env::get('DB_MAINTENANCE_PORT', Env::get('DB_PORT', '3306')),
+        'name' => (string) Env::get('DB_MAINTENANCE_NAME', Env::get('DB_NAME', '')),
+        'user' => (string) Env::get('DB_MAINTENANCE_USER', ''),
+        'password' => (string) Env::get('DB_MAINTENANCE_PASSWORD', ''),
+    ],
     'security' => [
         'session_name' => 'loyalty_session',
         'idle_timeout' => max(300, (int) Env::get('SESSION_IDLE_TIMEOUT', '1800')),
@@ -69,6 +76,8 @@ return [
     'rate_limits' => [
         'login_failures' => 5,
         'login_window_seconds' => 900,
+        'registration_attempts' => max(1, (int) Env::get('REGISTRATION_ATTEMPTS_PER_IP', '5')),
+        'registration_window_seconds' => max(60, (int) Env::get('REGISTRATION_WINDOW_SECONDS', '900')),
         'claim_failures' => 10,
         'claim_window_seconds' => 900,
         'successful_claims_per_user' => 20,

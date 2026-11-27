@@ -1,0 +1,3 @@
+# The project root contains configuration, source, SQL, logs and documentation.
+# Apache DocumentRoot must be the public/ directory. This is a fallback deny rule.
+Require all denied

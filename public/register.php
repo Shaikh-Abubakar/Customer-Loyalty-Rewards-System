@@ -28,12 +28,14 @@ if (request_method_is('POST')) {
         'phone' => $values['phone'],
         'password' => is_string($_POST['password'] ?? null) ? $_POST['password'] : '',
         'password_confirmation' => is_string($_POST['password_confirmation'] ?? null) ? $_POST['password_confirmation'] : '',
-    ]);
+    ], Http::clientIp());
     if ($result['status'] === 'success') {
         \App\Support\Flash::set('success', 'Your account is ready. Welcome to the rewards programme.');
         redirect_to('/dashboard.php');
     }
-    if ($result['status'] === 'duplicate') {
+    if ($result['status'] === 'rate_limited') {
+        $generalMessage = 'Too many registration attempts from this connection. Please try again later.';
+    } elseif ($result['status'] === 'duplicate') {
         $generalMessage = 'If this email can be used, your account is ready. You can sign in if you already have an account.';
     } else {
         $errors = $result['errors'];

@@ -50,7 +50,7 @@ final class UserRepository
     public function lockForLogin(int $userId): ?array
     {
         $statement = $this->pdo->prepare(
-            'SELECT id, role, status FROM users WHERE id = :id FOR UPDATE'
+            'SELECT id, role, status, password_hash FROM users WHERE id = :id FOR UPDATE'
         );
         $statement->execute(['id' => $userId]);
         $row = $statement->fetch();
@@ -63,6 +63,14 @@ final class UserRepository
         $statement->execute(['id' => $userId]);
         $row = $statement->fetch();
         return is_array($row) ? $row : null;
+    }
+
+    public function updatePasswordHash(int $userId, string $passwordHash): void
+    {
+        $statement = $this->pdo->prepare(
+            'UPDATE users SET password_hash = :hash, updated_at = UTC_TIMESTAMP() WHERE id = :id'
+        );
+        $statement->execute(['hash' => $passwordHash, 'id' => $userId]);
     }
 
     public function lockCustomerRow(int $userId): ?array

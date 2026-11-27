@@ -158,6 +158,15 @@ CREATE TABLE code_exports (
         REFERENCES users (id) ON DELETE RESTRICT ON UPDATE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE registration_attempts (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    ip_address VARCHAR(45) NOT NULL,
+    outcome ENUM('submitted','rate_limited') NOT NULL,
+    created_at DATETIME NOT NULL,
+    PRIMARY KEY (id),
+    KEY idx_registration_attempts_ip_created (ip_address, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE claim_attempts (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     user_id INT UNSIGNED NOT NULL,

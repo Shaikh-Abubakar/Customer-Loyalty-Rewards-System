@@ -13,6 +13,7 @@ use App\Repository\UserRepository;
 use App\Support\Database;
 use App\Support\Hmac;
 use App\Support\Http;
+use App\Support\RateLimitGuard;
 use PDO;
 use PDOException;
 use RuntimeException;
@@ -108,23 +109,30 @@ final class BatchService
     /** Generate all codes and commit their hashes before the one-time in-memory CSV is returned. */
     public function generateAndExport(int $batchId,string $password,int $adminId,?string $ip,?string $correlation): array
     {
-        $admin=$this->users->findCredentials($adminId);
         $attemptIp=$ip??Http::clientIp();
-        $limits=app_config('rate_limits',[]);
-        $maxFailures=max(1,(int)($limits['login_failures']??5));
-        $window=max(60,(int)($limits['login_window_seconds']??900));
-        if ($this->loginAttempts->countFailuresByIp($attemptIp,$window)>=$maxFailures
-            || $this->loginAttempts->countFailuresByUser($adminId,$window)>=$maxFailures) {
-            (new FraudService($this->pdo))->recordOnce('login_bruteforce','warning',$adminId,$attemptIp,null,null,
-                'Administrator export password re-entry exceeded the configured failure threshold.',$window);
-            throw new \InvalidArgumentException('Administrator password verification is temporarily locked. Try again after the security window.');
-        }
-        $passwordMatches=$admin!==null && ($admin['role']??'')==='admin' && ($admin['status']??'')==='active'
-            && password_verify($password,(string)$admin['password_hash']);
-        $this->loginAttempts->record($adminId,$attemptIp,$passwordMatches);
-        if (!$passwordMatches) {
-            throw new \InvalidArgumentException('Administrator password could not be verified.');
-        }
+        $accountForLock=$this->users->findCredentials($adminId);
+        $accountLockKey=is_array($accountForLock)?strtolower((string)$accountForLock['email']):'invalid-admin-'.$adminId;
+        RateLimitGuard::run($this->pdo, [
+            ['scope'=>'login-ip','subject'=>$attemptIp],
+            ['scope'=>'login-account','subject'=>$accountLockKey],
+        ], function () use ($adminId,$attemptIp,$password): void {
+            $admin=$this->users->findCredentials($adminId);
+            $limits=app_config('rate_limits',[]);
+            $maxFailures=max(1,(int)($limits['login_failures']??5));
+            $window=max(60,(int)($limits['login_window_seconds']??900));
+            if ($this->loginAttempts->countFailuresByIp($attemptIp,$window)>=$maxFailures
+                || $this->loginAttempts->countFailuresByUser($adminId,$window)>=$maxFailures) {
+                (new FraudService($this->pdo))->recordOnce('login_bruteforce','warning',$adminId,$attemptIp,null,null,
+                    'Administrator export password re-entry exceeded the configured failure threshold.',$window);
+                throw new \InvalidArgumentException('Administrator password verification is temporarily locked. Try again after the security window.');
+            }
+            $passwordMatches=$admin!==null && ($admin['role']??'')==='admin' && ($admin['status']??'')==='active'
+                && strlen($password)<=72 && password_verify($password,(string)$admin['password_hash']);
+            $this->loginAttempts->record($adminId,$attemptIp,$passwordMatches);
+            if (!$passwordMatches) {
+                throw new \InvalidArgumentException('Administrator password could not be verified.');
+            }
+        });
 
         [$activeId,$usableKeys]=$this->verifiedUsableKeys();
         $batch=$this->batches->findWithProduct($batchId);

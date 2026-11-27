@@ -8,6 +8,7 @@ use App\Repository\CodesRepository;
 use App\Repository\UserRepository;
 use App\Support\CodeFormat;
 use App\Support\Database;
+use App\Support\RateLimitGuard;
 use PDO;
 
 final class ClaimService
@@ -31,6 +32,15 @@ final class ClaimService
 
     /** @return array{status:string,points?:int,balance?:int} */
     public function claim(int $userId, string $input, string $ip): array
+    {
+        return RateLimitGuard::run($this->pdo, [
+            ['scope' => 'claim-user', 'subject' => (string) $userId],
+            ['scope' => 'claim-ip', 'subject' => $ip],
+        ], fn (): array => $this->claimWithinLimit($userId, $input, $ip));
+    }
+
+    /** @return array{status:string,points?:int,balance?:int} */
+    private function claimWithinLimit(int $userId, string $input, string $ip): array
     {
         $limits = app_config('rate_limits', []);
         $failureLimit = max(1, (int) ($limits['claim_failures'] ?? 10));

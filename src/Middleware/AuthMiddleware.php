@@ -6,6 +6,7 @@ namespace App\Middleware;
 use App\Repository\UserRepository;
 use App\Support\Flash;
 use App\Support\Http;
+use App\Support\SessionManager;
 use PDO;
 
 final class AuthMiddleware
@@ -69,7 +70,8 @@ final class AuthMiddleware
     private static function resetToGuest(string $message): void
     {
         $_SESSION = [];
-        session_regenerate_id(true);
+        SessionManager::regenerateId();
+        $_SESSION['_last_activity'] = time();
         Flash::set('warning', $message);
     }
 

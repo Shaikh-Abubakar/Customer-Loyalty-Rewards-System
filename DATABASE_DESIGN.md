@@ -780,3 +780,14 @@ The selected maximum is 1,000 codes per request [Assumption A-10]. Verify it aga
 The earlier lifecycle, table inventory and write-ownership findings C-01 to C-03 and the additional ownership finding C-17 are corrected. Negative-balance handling and retention defaults are selected in A-26 and A-11; they are not unresolved design branches.
 
 Nothing in this document has been run against a database.
+
+
+---
+
+## Stage 7 security addendum (implementation extension; does not rewrite the Stage 2 model)
+
+The original approved Stage 2 model defines 17 business/security tables. Stage 7 adds one narrow table, `registration_attempts`, to persist unauthenticated registration throttling without storing submitted emails, names, passwords or raw form data. It stores only an IP address, outcome (`submitted` or `rate_limited`) and UTC timestamp. Existing installations apply `database/stage7_security_upgrade.sql`; fresh installations receive the table from `database/schema.sql`.
+
+The database also enforces the append-only policy for `points_ledger` and `audit_logs` with BEFORE UPDATE and BEFORE DELETE triggers in `database/security_hardening.sql`. The runtime application account receives SELECT/INSERT only on those two tables. It receives no global/schema-management privileges. A separate CLI-only maintenance database account receives SELECT/DELETE only on `login_attempts`, `claim_attempts` and `registration_attempts` so the monthly retention command cannot delete customer/accounting/audit history.
+
+This addendum is an implementation-stage extension, not a retroactive claim that the original 17-table Stage 2 inventory included registration attempts. The extension and its new default throttle are recorded as A-35 in `ASSUMPTIONS.md`.

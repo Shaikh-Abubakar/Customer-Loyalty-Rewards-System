@@ -64,7 +64,7 @@ CREATE DATABASE customer_loyalty
     COLLATE utf8mb4_unicode_ci;
 ```
 
-Select `customer_loyalty` in phpMyAdmin and import `database/schema.sql`. It creates the approved 17 tables and does not insert demo records.
+Select `customer_loyalty` in phpMyAdmin and import `database/schema.sql`. It creates the 17 approved core tables plus the Stage 7 `registration_attempts` table (18 total) and does not insert demo records.
 
 Use a dedicated application database user, not `root`. Follow the least-privilege rules in `DATABASE_DESIGN.md`; `points_ledger` and `audit_logs` must be SELECT/INSERT only for the application account (never UPDATE or DELETE). Do not grant broader privileges merely to make a test pass.
 
@@ -181,7 +181,7 @@ php bin/test_database.php
 - `test_stage5.php`: 26 database-independent checks for code normalization/alphabet, HMAC key and digest handling, password hashing, UTF-8 character counting and a source-level SQL-string regression guard.
 - `test_stage6.php`: 41 database-independent source-level checks for administrator guards, CSRF-protected state changes, batch/HMAC/export rules, append-only ledger boundaries, fraud review, audit and reconciliation behavior.
 - `test_database.php`: real PDO MySQL connection test; it needs `pdo_mysql` and a running database.
-- Build-container results on 2026-11-25: foundation 20/20, Stage 5 26/26, Stage 6 41/41, and PHP syntax clean for all 84 PHP files. `php bin/test_database.php` is blocked because `pdo_mysql` is absent in this runtime. These are static/build-container checks, not XAMPP or MySQL integration tests.
+- Build-container results on 2026-11-25: foundation 20/20, Stage 5 26/26, Stage 6 41/41, Stage 7 68/68, and PHP syntax clean for all 88 PHP files. `php bin/test_database.php` is blocked because `pdo_mysql` is absent in this runtime. These are static/build-container checks, not XAMPP or MySQL integration tests.
 - Run the full browser, SQL, concurrency, rate-limit and CSRF test plan in `TEST_PLAN.md` on your own XAMPP or Ubuntu installation. Do not mark tests as passed until they are run there. Record actual versions and results.
 
 ## Security notes
@@ -194,4 +194,24 @@ php bin/test_database.php
 
 ## Assignment and Git submission
 
-The assignment requires meaningful incremental commits, a 5–10 interaction AI log with at least two genuine AI errors/corrections, test evidence and a public repository. The supplied Stage 4 ZIP does not contain `.git` metadata, so no commit history could be inspected or created here. Apply the Stage 5 and Stage 6 files to your own Git working tree, inspect the changes, then commit each stage as a separate milestone. Add your actual earlier prompts and student-run test evidence to `AI_LOG.md`/`TEST_PLAN.md`; do not claim that sandbox checks are XAMPP tests.
+The assignment requires meaningful incremental commits, a 5–10 interaction AI log with at least two genuine AI errors/corrections, test evidence and a public repository. The supplied Stage 4 ZIP does not contain `.git` metadata, so no commit history could be inspected or created here. Apply the Stage 5, Stage 6 and Stage 7 files to your own Git working tree, inspect the changes, then commit each stage as a separate milestone. Add your actual earlier prompts and student-run test evidence to `AI_LOG.md`/`TEST_PLAN.md`; do not claim that sandbox checks are XAMPP tests.
+
+
+## 7. Stage 7 security hardening
+
+Stage 7 adds persistent registration throttling, serializes login/claim/export attempt counters with MySQL/MariaDB named locks, rechecks a password against the locked account row before completing login, routes session-ID rotation through the checked session helper, strengthens response headers and redacts secrets and compact or grouped product-code-shaped values from technical log messages; registration throttles also create a deduplicated fraud-review signal. The existing A-04 login and claim thresholds remain unchanged; the new A-35 registration default is 5 submissions per IP in 15 minutes and is configurable with `REGISTRATION_ATTEMPTS_PER_IP` / `REGISTRATION_WINDOW_SECONDS`.
+
+### Existing Stage 6 database upgrade
+
+1. Back up the demo database.
+2. Select the configured database in phpMyAdmin and import `database/stage7_security_upgrade.sql` once. It creates only the new `registration_attempts` table.
+3. Create both `loyalty_app` and `loyalty_maintenance` database users separately with different strong local passwords (the `CREATE USER` examples in the SQL file are comments/placeholders, not executed statements). As a database administrator, review and run `database/security_hardening.sql`. Before running it, change `USE customer_loyalty` and all account host/database names if your `.env` differs. The script creates append-only triggers for `points_ledger` and `audit_logs` and reduces the runtime account to table-level privileges. The web runtime account must not be root and must not have schema-management privileges.
+4. Verify the effective privileges using `SHOW GRANTS FOR 'loyalty_app'@'127.0.0.1';`. The application needs SELECT/INSERT only for `points_ledger` and `audit_logs`; neither table may have UPDATE or DELETE grants. The script also defines a separate `loyalty_maintenance` account limited to SELECT/DELETE on the three attempt tables; never set this as the Apache runtime user.
+
+For a new installation, import `database/schema.sql`, then follow steps 3 and 4. The schema now creates 18 tables: the approved 17 plus Stage 7's `registration_attempts` security table.
+
+The root `.htaccess` denies accidental direct access to the project root. Configure Apache `DocumentRoot` to point to `public/`; do not use the project root as the web root. HTTPS deployments receive HSTS automatically. Local XAMPP HTTP remains supported as the coursework exception in A-28.
+
+Set the separate `DB_MAINTENANCE_USER` and `DB_MAINTENANCE_PASSWORD` values before running the monthly `php bin/maintain_retention.php` command. This removes only login/claim/registration attempts older than 90 days and daily technical log files older than 30 days; it leaves the points ledger, audit logs, fraud events and reconciliation history untouched.
+
+Run `php bin/test_stage7.php` for database-independent Stage 7 regression checks. Run all tests in `TEST_PLAN.md` against the actual XAMPP/Ubuntu MySQL or MariaDB database before treating integration, concurrency, trigger and privilege behavior as verified. This build environment does not contain `pdo_mysql` or a database server, so those checks cannot be represented as passed here.

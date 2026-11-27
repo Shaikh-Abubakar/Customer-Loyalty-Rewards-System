@@ -1,0 +1,9 @@
+Options -Indexes
+
+<FilesMatch "(?i)^\.(env|git|htaccess|htpasswd)">
+    Require all denied
+</FilesMatch>
+
+<FilesMatch "(?i)\.(sql|log|md|zip|bak|ini|dist|example)$">
+    Require all denied
+</FilesMatch>
